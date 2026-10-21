@@ -170,9 +170,9 @@ public sealed class MainForm : Form
             return;
         }
         var rule = settings.Rules.FirstOrDefault(r => string.Equals(r.ExecutablePath, path, StringComparison.OrdinalIgnoreCase));
-        using var dialog = new Form { Text = "Saved rule — " + Path.GetFileName(path), Width = 450, Height = 260, StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false };
-        var dl = new TextBox { Left = 170, Top = 25, Width = 225, Text = rule?.DownloadLimitKBps?.ToString() ?? "" };
-        var ul = new TextBox { Left = 170, Top = 65, Width = 225, Text = rule?.UploadLimitKBps?.ToString() ?? "" };
+        using var dialog = new Form { Text = "Saved rule — " + Path.GetFileName(path), Width = 450, Height = 260, StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, BackColor = panel, ForeColor = ink, Font = Font };
+        var dl = new TextBox { Left = 170, Top = 25, Width = 225, Text = rule?.DownloadLimitKBps?.ToString() ?? "", BackColor = bg, ForeColor = ink };
+        var ul = new TextBox { Left = 170, Top = 65, Width = 225, Text = rule?.UploadLimitKBps?.ToString() ?? "", BackColor = bg, ForeColor = ink };
         var blocked = new CheckBox { Left = 170, Top = 105, Text = "Block application", Checked = rule?.Blocked ?? false, AutoSize = true };
         dialog.Controls.AddRange(new Control[] {
             new Label { Text = "Download KB/s", Left = 18, Top = 28, AutoSize = true },
@@ -180,7 +180,7 @@ public sealed class MainForm : Form
             dl, ul, blocked,
             new Label { Text = "Blank = unlimited. Rules saved but not enforced in this preview.", Left = 18, Top = 143, Width = 410, Height = 34 }
         });
-        var save = new Button { Text = "Save rule", Left = 280, Top = 176, Width = 115, DialogResult = DialogResult.OK };
+        var save = new Button { Text = "Save rule", Left = 280, Top = 176, Width = 115, DialogResult = DialogResult.OK, BackColor = Color.FromArgb(45, 74, 91), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
         dialog.Controls.Add(save);
         dialog.AcceptButton = save;
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
@@ -210,7 +210,7 @@ public sealed class MainForm : Form
 
     private void SetupContextMenu()
     {
-        var menu = new ContextMenuStrip();
+        var menu = new ContextMenuStrip { BackColor = panel, ForeColor = ink, ShowImageMargin = false };
         menu.Items.Add("Open File Location", null, (_, _) => WithSelectedPath(path =>
         {
             try { Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + path + "\"") { UseShellExecute = true }); }
@@ -222,7 +222,7 @@ public sealed class MainForm : Form
             catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { MessageBox.Show(ex.Message); }
         }));
         menu.Items.Add("Set Speed Limit (saved only)", null, (_, _) => { if (grid.CurrentRow is not null) EditRule(grid.CurrentRow.Index); });
-        menu.Items.Add("Block Internet (not enforced)", null, (_, _) => { if (grid.CurrentRow is not null) EditRule(grid.CurrentRow.Index); });
+        menu.Items.Add("Block Internet (not enforced)", null, (_, _) => ToggleBlockSelected());
         menu.Items.Add("Usage Statistics (not implemented)", null, (_, _) => MessageBox.Show("Per-app traffic attribution is not implemented yet."));
         menu.Items.Add("Copy File Path", null, (_, _) => WithSelectedPath(path => Clipboard.SetText(path)));
         menu.Items.Add("View Process Details", null, (_, _) =>
@@ -241,6 +241,22 @@ public sealed class MainForm : Form
                 grid.CurrentCell = grid.Rows[e.RowIndex].Cells[0];
             }
         };
+    }
+
+    private void ToggleBlockSelected()
+    {
+        string path = grid.CurrentRow?.Cells["path"].Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(path)) { MessageBox.Show("Executable path unavailable."); return; }
+        var rule = RuleCatalog.Find(settings, path);
+        if (rule is null)
+        {
+            rule = new AppRule { ExecutablePath = path, Blocked = true };
+            settings.Rules.Add(rule);
+        }
+        else rule.Blocked = !rule.Blocked;
+        try { SettingsStore.Save(settings); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { MessageBox.Show(ex.Message, "Unable to save settings"); return; }
+        Reload();
     }
 
     private void WithSelectedPath(Action<string> action)
