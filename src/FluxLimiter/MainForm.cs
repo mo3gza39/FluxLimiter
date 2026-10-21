@@ -79,9 +79,15 @@ public sealed class MainForm : Form
         grid.Columns.Add("app", "Application");
         grid.Columns.Add("pid", "PID");
         grid.Columns.Add("path", "Executable");
-        grid.Columns.Add("down", "Down limit (KB/s)");
-        grid.Columns.Add("up", "Up limit (KB/s)");
-        grid.Columns.Add("block", "Blocked");
+        grid.Columns.Add("down", "Download limit");
+        grid.Columns.Add("up", "Upload limit");
+        grid.Columns.Add("block", "Status");
+        grid.Columns["app"].FillWeight = 125;
+        grid.Columns["pid"].FillWeight = 55;
+        grid.Columns["path"].FillWeight = 230;
+        grid.Columns["down"].FillWeight = 90;
+        grid.Columns["up"].FillWeight = 90;
+        grid.Columns["block"].FillWeight = 70;
         grid.CellDoubleClick += (_, e) => { if (e.RowIndex >= 0) EditRule(e.RowIndex); };
 
         var bottom = new Panel { Dock = DockStyle.Bottom, Height = 68, BackColor = panel };
@@ -137,7 +143,7 @@ public sealed class MainForm : Form
                     if (filter.SelectedIndex == 1 && isSystem) continue;
                     if (filter.SelectedIndex == 2 && !isSystem) continue;
                     var rule = RuleCatalog.Find(settings, path);
-                    rows.Add(new object[] { name, p.Id, path, rule?.DownloadLimitKBps?.ToString() ?? "Unlimited", rule?.UploadLimitKBps?.ToString() ?? "Unlimited", rule?.Blocked == true ? "Yes" : "No" });
+                    rows.Add(new object[] { name, p.Id, path, rule?.DownloadLimitKBps is int dl ? dl + " KB/s" : "Unlimited", rule?.UploadLimitKBps is int ul ? ul + " KB/s" : "Unlimited", rule?.Blocked == true ? "Blocked" : "Allowed" });
                 }
                 catch (InvalidOperationException) { }
                 catch (System.ComponentModel.Win32Exception) { }
@@ -233,9 +239,9 @@ public sealed class MainForm : Form
             try { Process.Start(new ProcessStartInfo("rundll32.exe", "shell32.dll,ShellExec_RunDLL properties \"" + path + "\"") { UseShellExecute = true }); }
             catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { MessageBox.Show(ex.Message); }
         }));
-        menu.Items.Add("Set Speed Limit (saved only)", null, (_, _) => { if (grid.CurrentRow is not null) EditRule(grid.CurrentRow.Index); });
-        menu.Items.Add("Block Internet (not enforced)", null, (_, _) => ToggleBlockSelected());
-        menu.Items.Add("Usage Statistics (not implemented)", null, (_, _) => MessageBox.Show("Per-app traffic attribution is not implemented yet."));
+        menu.Items.Add("Set speed limit", null, (_, _) => { if (grid.CurrentRow is not null) EditRule(grid.CurrentRow.Index); });
+        menu.Items.Add("Toggle block rule", null, (_, _) => ToggleBlockSelected());
+        menu.Items.Add("Usage statistics", null, (_, _) => MessageBox.Show("Per-app traffic attribution is not implemented yet."));
         menu.Items.Add("Copy File Path", null, (_, _) => WithSelectedPath(path => Clipboard.SetText(path)));
         menu.Items.Add("View Process Details", null, (_, _) =>
         {
