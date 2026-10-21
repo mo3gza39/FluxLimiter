@@ -162,7 +162,7 @@ public sealed class MainForm : Form
 
         bottom.Visible = false;
         var content = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, BackColor = bg };
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 166));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 182));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 192));
         content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -381,12 +381,24 @@ public sealed class MainForm : Form
         var menu = new ContextMenuStrip { BackColor = panel, ForeColor = ink, ShowImageMargin = false };
         menu.Items.Add("Open File Location", null, (_, _) => WithSelectedPath(path =>
         {
-            try { Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + path + "\"") { UseShellExecute = true }); }
+            try
+            {
+                var psi = new ProcessStartInfo("explorer.exe") { UseShellExecute = true };
+                psi.ArgumentList.Add("/select," + path);
+                Process.Start(psi);
+            }
             catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { MessageBox.Show(ex.Message); }
         }));
         menu.Items.Add("Properties", null, (_, _) => WithSelectedPath(path =>
         {
-            try { Process.Start(new ProcessStartInfo("rundll32.exe", "shell32.dll,ShellExec_RunDLL properties \"" + path + "\"") { UseShellExecute = true }); }
+            try
+            {
+                var psi = new ProcessStartInfo("rundll32.exe") { UseShellExecute = true };
+                psi.ArgumentList.Add("shell32.dll,ShellExec_RunDLL");
+                psi.ArgumentList.Add("properties");
+                psi.ArgumentList.Add(path);
+                Process.Start(psi);
+            }
             catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { MessageBox.Show(ex.Message); }
         }));
         menu.Items.Add("Set speed limit", null, (_, _) => { if (grid.CurrentRow is not null) EditRule(grid.CurrentRow.Index); });
