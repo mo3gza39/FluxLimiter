@@ -61,7 +61,7 @@ public sealed class MainForm : Form
         grid.RowHeadersVisible = false;
         grid.AllowUserToAddRows = false;
         grid.AllowUserToDeleteRows = false;
-        grid.ReadOnly = true;
+        grid.ReadOnly = false;
         grid.MultiSelect = false;
         grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
         grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
@@ -79,17 +79,30 @@ public sealed class MainForm : Form
         grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(38, 99, 100);
         grid.DefaultCellStyle.SelectionForeColor = Color.White;
         grid.Columns.Add("app", "Application");
+        grid.Columns.Add("status", "Status");
+        grid.Columns.Add("download", "Download ↓");
+        grid.Columns.Add("upload", "Upload ↑");
+        grid.Columns.Add("total", "Total");
+        grid.Columns.Add("down", "Limit Download");
+        grid.Columns.Add("up", "Limit Upload");
+        grid.Columns.Add("rule", "Rule");
+        grid.Columns.Add("action", "Action");
         grid.Columns.Add("pid", "PID");
         grid.Columns.Add("path", "Executable");
-        grid.Columns.Add("down", "Download limit");
-        grid.Columns.Add("up", "Upload limit");
-        grid.Columns.Add("block", "Status");
-        grid.Columns["app"].FillWeight = 125;
-        grid.Columns["pid"].FillWeight = 55;
-        grid.Columns["path"].FillWeight = 230;
+        grid.Columns["pid"].Visible = false;
+        grid.Columns["path"].Visible = false;
+        grid.Columns["app"].FillWeight = 120;
+        grid.Columns["status"].FillWeight = 60;
+        grid.Columns["download"].FillWeight = 78;
+        grid.Columns["upload"].FillWeight = 72;
+        grid.Columns["total"].FillWeight = 65;
         grid.Columns["down"].FillWeight = 90;
-        grid.Columns["up"].FillWeight = 90;
-        grid.Columns["block"].FillWeight = 70;
+        grid.Columns["up"].FillWeight = 86;
+        grid.Columns["rule"].FillWeight = 58;
+        grid.Columns["action"].FillWeight = 45;
+        grid.Columns["down"].ReadOnly = false;
+        grid.Columns["up"].ReadOnly = false;
+        grid.CellEndEdit += (_, e) => { if (e.RowIndex >= 0 && (e.ColumnIndex == grid.Columns["down"].Index || e.ColumnIndex == grid.Columns["up"].Index)) SaveInlineRule(e.RowIndex); };
         grid.CellDoubleClick += (_, e) => { if (e.RowIndex >= 0) EditRule(e.RowIndex); };
 
         var bottom = new Panel { Dock = DockStyle.Bottom, Height = 68, BackColor = panel };
@@ -205,7 +218,7 @@ public sealed class MainForm : Form
                     if (filter.SelectedIndex == 1 && isSystem) continue;
                     if (filter.SelectedIndex == 2 && !isSystem) continue;
                     var rule = RuleCatalog.Find(settings, path);
-                    rows.Add(new object[] { name, p.Id, path, rule?.DownloadLimitKBps is int dl ? dl + " KB/s" : "Unlimited", rule?.UploadLimitKBps is int ul ? ul + " KB/s" : "Unlimited", rule?.Blocked == true ? "Blocked" : "Allowed" });
+                    rows.Add(new object[] { name, rule?.Blocked == true ? "Blocked" : "Active", "—", "—", "—", rule?.DownloadLimitKBps?.ToString(CultureInfo.InvariantCulture) ?? "Unlimited", rule?.UploadLimitKBps?.ToString(CultureInfo.InvariantCulture) ?? "Unlimited", rule is null ? "None" : "Custom", "•••", p.Id, path });
                 }
                 catch (InvalidOperationException) { }
                 catch (System.ComponentModel.Win32Exception) { }
@@ -220,8 +233,8 @@ public sealed class MainForm : Form
                 for (int i = 0; i < rows.Count; i++)
                 {
                     int row = grid.Rows.Add(rows[i]);
-                    if (selectedPid.HasValue && Equals(rows[i][1], selectedPid.Value) &&
-                        string.Equals(rows[i][2]?.ToString(), selectedPath, StringComparison.OrdinalIgnoreCase))
+                    if (selectedPid.HasValue && Equals(rows[i][9], selectedPid.Value) &&
+                        string.Equals(rows[i][10]?.ToString(), selectedPath, StringComparison.OrdinalIgnoreCase))
                         selectedIndex = row;
                 }
                 grid.ClearSelection();
@@ -239,6 +252,26 @@ public sealed class MainForm : Form
             ruleCount.Text = settings.Rules.Count.ToString(CultureInfo.InvariantCulture) + "  Saved rules";
         }
         finally { reloading = false; }
+    }
+
+    private void SaveInlineRule(int rowIndex)
+    {
+        string path = grid.Rows[rowIndex].Cells["path"].Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(path)) return;
+        if (!TryLimit(grid.Rows[rowIndex].Cells["down"].Value?.ToString() ?? "", out var down) ||
+            !TryLimit(grid.Rows[rowIndex].Cells["up"].Value?.ToString() ?? "", out var up))
+        {
+            MessageBox.Show("Use a positive whole number in KB/s, or Unlimited.", "Invalid limit");
+            Reload();
+            return;
+        }
+        var rule = RuleCatalog.Find(settings, path) ?? new AppRule { ExecutablePath = path };
+        rule.DownloadLimitKBps = down;
+        rule.UploadLimitKBps = up;
+        if (!settings.Rules.Contains(rule)) settings.Rules.Add(rule);
+        try { SettingsStore.Save(settings); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { MessageBox.Show(ex.Message, "Unable to save settings"); }
+        Reload();
     }
 
     private void EditRule(int index)
@@ -282,7 +315,7 @@ public sealed class MainForm : Form
     private static bool TryLimit(string value, out int? limit)
     {
         limit = null;
-        if (string.IsNullOrWhiteSpace(value)) return true;
+        if (string.IsNullOrWhiteSpace(value) || value.Trim().Equals("Unlimited", StringComparison.OrdinalIgnoreCase)) return true;
         if (!int.TryParse(value, out int n) || n <= 0) return false;
         limit = n;
         return true;
