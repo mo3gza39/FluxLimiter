@@ -16,6 +16,7 @@ public sealed class MainForm : Form
     private readonly ComboBox filter = new();
     private readonly System.Windows.Forms.Timer refresh = new() { Interval = 5000 };
     private bool reloading;
+    private bool settingsSaveDisabled;
     private readonly System.Windows.Forms.Timer speedTimer = new() { Interval = 1000 };
     private readonly Label status = new();
     private readonly Label processCount = new();
@@ -36,6 +37,7 @@ public sealed class MainForm : Form
         ForeColor = ink;
         Font = new Font("Segoe UI", 10);
         StartPosition = FormStartPosition.CenterScreen;
+        AutoScaleMode = AutoScaleMode.Dpi;
 
         var top = new Panel { Dock = DockStyle.Top, Height = 176, BackColor = panel, Padding = new Padding(28, 18, 28, 14) };
         var title = new Label { Text = "FluxLimiter", Font = new Font("Segoe UI Semibold", 26), ForeColor = Color.FromArgb(91, 225, 184), Left = 28, Top = 16, AutoSize = true };
@@ -100,6 +102,7 @@ public sealed class MainForm : Form
         grid.Columns["up"].FillWeight = 86;
         grid.Columns["rule"].FillWeight = 58;
         grid.Columns["action"].FillWeight = 45;
+        foreach (DataGridViewColumn column in grid.Columns) column.ReadOnly = true;
         grid.Columns["down"].ReadOnly = false;
         grid.Columns["up"].ReadOnly = false;
         grid.CellEndEdit += (_, e) => { if (e.RowIndex >= 0 && (e.ColumnIndex == grid.Columns["down"].Index || e.ColumnIndex == grid.Columns["up"].Index)) SaveInlineRule(e.RowIndex); };
@@ -159,12 +162,17 @@ public sealed class MainForm : Form
         shell.Controls.Add(dashboard);
         shell.Controls.Add(sidebar);
         Controls.Add(shell);
-        refresh.Tick += (_, _) => { if (!reloading && !grid.ContainsFocus) Reload(); };
+        refresh.Tick += async (_, _) => { if (!reloading && !grid.ContainsFocus && grid.ContextMenuStrip?.Visible != true) await ReloadAsync(); };
         refresh.Start();
         speedTimer.Tick += (_, _) => { try { var rates = network.Sample(); speed.Text = $"Live traffic    ↓ {rates.DownloadKBps:F1} KB/s     ↑ {rates.UploadKBps:F1} KB/s"; } catch (Exception ex) when (ex is System.Net.NetworkInformation.NetworkInformationException or InvalidOperationException) { speed.Text = "Device speed unavailable"; } };
         speedTimer.Start();
         SetupContextMenu();
-        Reload();
+        if (!string.IsNullOrWhiteSpace(SettingsStore.LastLoadWarning))
+        {
+            settingsSaveDisabled = SettingsStore.LastLoadWarning.Contains("Saving is disabled", StringComparison.OrdinalIgnoreCase);
+            MessageBox.Show(SettingsStore.LastLoadWarning, "FluxLimiter settings recovery");
+        }
+        _ = ReloadAsync();
     }
 
     private Panel DashboardCard(string heading, Label value, string note)
@@ -194,36 +202,30 @@ public sealed class MainForm : Form
         return b;
     }
 
-    private void Reload()
+    private sealed record ProcessRow(string Name, int Pid, string Path, bool IsSystem);
+
+    private async Task ReloadAsync()
     {
-        if (reloading) return;
+        if (reloading || IsDisposed) return;
         reloading = true;
         try
         {
             string query = search.Text.Trim();
+            int filterIndex = filter.SelectedIndex;
             int? selectedPid = grid.CurrentRow?.Cells["pid"].Value is int pid ? pid : null;
             string? selectedPath = grid.CurrentRow?.Cells["path"].Value?.ToString();
             int firstVisible = grid.FirstDisplayedScrollingRowIndex;
 
-            var rows = new List<object[]>();
-            foreach (var p in Process.GetProcesses().OrderBy(p => p.ProcessName))
+            var snapshots = await Task.Run(() => SnapshotProcesses(query, filterIndex));
+            if (IsDisposed) return;
+            var rows = snapshots.Select(p =>
             {
-                try
-                {
-                    string name = p.ProcessName;
-                    string path;
-                    try { path = p.MainModule?.FileName ?? ""; } catch { path = ""; }
-                    if (!name.Contains(query, StringComparison.OrdinalIgnoreCase) && !path.Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
-                    bool isSystem = path.StartsWith(Environment.GetFolderPath(Environment.SpecialFolder.Windows), StringComparison.OrdinalIgnoreCase);
-                    if (filter.SelectedIndex == 1 && isSystem) continue;
-                    if (filter.SelectedIndex == 2 && !isSystem) continue;
-                    var rule = RuleCatalog.Find(settings, path);
-                    rows.Add(new object[] { name, rule?.Blocked == true ? "Blocked" : "Active", "—", "—", "—", rule?.DownloadLimitKBps?.ToString(CultureInfo.InvariantCulture) ?? "Unlimited", rule?.UploadLimitKBps?.ToString(CultureInfo.InvariantCulture) ?? "Unlimited", rule is null ? "None" : "Custom", "•••", p.Id, path });
-                }
-                catch (InvalidOperationException) { }
-                catch (System.ComponentModel.Win32Exception) { }
-                finally { p.Dispose(); }
-            }
+                var rule = RuleCatalog.Find(settings, p.Path);
+                return new object[] { p.Name, rule?.Blocked == true ? "Blocked" : "Active", "—", "—", "—",
+                    rule?.DownloadLimitKBps?.ToString(CultureInfo.InvariantCulture) ?? "Unlimited",
+                    rule?.UploadLimitKBps?.ToString(CultureInfo.InvariantCulture) ?? "Unlimited",
+                    rule is null ? "None" : "Custom", "•••", p.Pid, p.Path };
+            }).ToList();
 
             grid.SuspendLayout();
             try
@@ -254,6 +256,32 @@ public sealed class MainForm : Form
         finally { reloading = false; }
     }
 
+    private static List<ProcessRow> SnapshotProcesses(string query, int filterIndex)
+    {
+        string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        var rows = new List<ProcessRow>();
+        foreach (var p in Process.GetProcesses().OrderBy(p => p.ProcessName))
+        {
+            try
+            {
+                string name = p.ProcessName;
+                string path;
+                try { path = p.MainModule?.FileName ?? ""; } catch { path = ""; }
+                if (!name.Contains(query, StringComparison.OrdinalIgnoreCase) && !path.Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
+                bool isSystem = path.StartsWith(windows, StringComparison.OrdinalIgnoreCase);
+                if (filterIndex == 1 && isSystem) continue;
+                if (filterIndex == 2 && !isSystem) continue;
+                rows.Add(new ProcessRow(name, p.Id, path, isSystem));
+            }
+            catch (InvalidOperationException) { }
+            catch (System.ComponentModel.Win32Exception) { }
+            finally { p.Dispose(); }
+        }
+        return rows;
+    }
+
+    private void Reload() => _ = ReloadAsync();
+
     private void SaveInlineRule(int rowIndex)
     {
         string path = grid.Rows[rowIndex].Cells["path"].Value?.ToString() ?? "";
@@ -269,6 +297,7 @@ public sealed class MainForm : Form
         rule.DownloadLimitKBps = down;
         rule.UploadLimitKBps = up;
         if (!settings.Rules.Contains(rule)) settings.Rules.Add(rule);
+        if (settingsSaveDisabled) { MessageBox.Show("Settings cannot be saved because the previous settings file could not be safely preserved."); return; }
         try { SettingsStore.Save(settings); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { MessageBox.Show(ex.Message, "Unable to save settings"); }
         Reload();
@@ -394,7 +423,17 @@ public sealed class MainForm : Form
         var csv = new StringBuilder();
         csv.AppendLine("Application,PID,Executable,DownloadLimitKBps,UploadLimitKBps,Blocked");
         foreach (DataGridViewRow row in grid.Rows)
-            csv.AppendLine(string.Join(",", row.Cells.Cast<DataGridViewCell>().Select(c => CsvCell(c.Value?.ToString() ?? ""))));
+        {
+            string[] values = {
+                row.Cells["app"].Value?.ToString() ?? "",
+                row.Cells["pid"].Value?.ToString() ?? "",
+                row.Cells["path"].Value?.ToString() ?? "",
+                row.Cells["down"].Value?.ToString() ?? "",
+                row.Cells["up"].Value?.ToString() ?? "",
+                string.Equals(row.Cells["status"].Value?.ToString(), "Blocked", StringComparison.OrdinalIgnoreCase) ? "true" : "false"
+            };
+            csv.AppendLine(string.Join(",", values.Select(CsvCell)));
+        }
         try { File.WriteAllText(dialog.FileName, csv.ToString(), new UTF8Encoding(true)); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { MessageBox.Show(ex.Message, "Export failed"); }
     }
