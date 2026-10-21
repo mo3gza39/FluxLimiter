@@ -1,0 +1,27 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main, "dev/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Restore
+        run: dotnet restore src/FluxLimiter/FluxLimiter.csproj
+      - name: Build
+        run: dotnet build src/FluxLimiter/FluxLimiter.csproj -c Release --no-restore
+      - name: Publish portable executable
+        run: dotnet publish src/FluxLimiter/FluxLimiter.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableWindowsTargeting=true -o dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FluxLimiter-win-x64
+          path: dist/
