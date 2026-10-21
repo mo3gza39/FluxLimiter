@@ -17,6 +17,7 @@ public sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer refresh = new() { Interval = 5000 };
     private bool reloading;
     private bool refreshQueued;
+    private bool refreshDeferredByContextMenu;
     private bool settingsSaveDisabled;
     private readonly System.Windows.Forms.Timer searchDebounce = new() { Interval = 300 };
     private readonly System.Windows.Forms.Timer speedTimer = new() { Interval = 1000 };
@@ -194,7 +195,7 @@ public sealed class MainForm : Form
         shell.Controls.Add(sidebar);
         Controls.Add(shell);
         searchDebounce.Tick += (_, _) => { searchDebounce.Stop(); QueueReload(); };
-        refresh.Tick += (_, _) => { if (!grid.ContainsFocus && grid.ContextMenuStrip?.Visible != true) QueueReload(); };
+        refresh.Tick += (_, _) => { if (!grid.IsCurrentCellInEditMode && grid.ContextMenuStrip?.Visible != true) QueueReload(); };
         refresh.Start();
         speedTimer.Tick += (_, _) => { try { var rates = network.Sample(); speed.Text = $"Live traffic    ↓ {rates.DownloadKBps:F1} KB/s     ↑ {rates.UploadKBps:F1} KB/s"; } catch (Exception ex) when (ex is System.Net.NetworkInformation.NetworkInformationException or InvalidOperationException) { speed.Text = "Device speed unavailable"; } };
         speedTimer.Start();
@@ -217,12 +218,18 @@ public sealed class MainForm : Form
         return card;
     }
 
-    private Panel DashboardPlaceholder(string heading, string period, string message, int x, int y, int width, int height)
+    private Panel DashboardPlaceholder(string titleText, string periodText, string bodyText)
     {
-        var card = new Panel { Left = x, Top = y, Width = width, Height = height, BackColor = panel, MinimumSize = new Size(260, 130) };
-        card.Controls.Add(new Label { Text = heading, Left = 20, Top = 14, Width = 260, Height = 30, Font = new Font("Segoe UI Semibold", 14), ForeColor = ink });
-        card.Controls.Add(new Label { Text = period, Left = width - 145, Top = 18, Width = 120, Height = 22, TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.FromArgb(145, 159, 177), Anchor = AnchorStyles.Top | AnchorStyles.Right });
-        card.Controls.Add(new Label { Text = message, Left = 24, Top = 66, Width = width - 48, Height = 50, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.FromArgb(145, 159, 177), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right });
+        var card = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(25, 33, 45), Padding = new Padding(22), Margin = new Padding(8), MinimumSize = new Size(260, 130) };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = card.BackColor };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        var title = new Label { Text = titleText, AutoSize = true, Font = new Font("Segoe UI Semibold", 13), ForeColor = Color.FromArgb(224, 232, 240), Margin = new Padding(0, 0, 0, 4) };
+        var period = new Label { Text = periodText, AutoSize = true, ForeColor = Color.FromArgb(130, 148, 168), Margin = new Padding(0, 0, 0, 10) };
+        var body = new Label { Text = bodyText, Dock = DockStyle.Fill, AutoEllipsis = true, ForeColor = Color.FromArgb(150, 166, 184), TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(0) };
+        layout.Controls.Add(title, 0, 0); layout.Controls.Add(period, 0, 1); layout.Controls.Add(body, 0, 2);
+        card.Controls.Add(layout);
         return card;
     }
 
@@ -260,7 +267,7 @@ public sealed class MainForm : Form
             if (IsDisposed) return;
             if (grid.ContextMenuStrip?.Visible == true)
             {
-                refreshQueued = true;
+                refreshDeferredByContextMenu = true;
                 return;
             }
 
@@ -459,6 +466,14 @@ public sealed class MainForm : Form
                 "Executable: " + grid.CurrentRow.Cells["path"].Value, "Process details");
         });
         grid.ContextMenuStrip = menu;
+        menu.Closed += (_, _) =>
+        {
+            if (refreshDeferredByContextMenu && !IsDisposed)
+            {
+                refreshDeferredByContextMenu = false;
+                QueueReload();
+            }
+        };
         grid.CellMouseDown += (_, e) =>
         {
             if (e.Button == MouseButtons.Right && e.RowIndex >= 0)
