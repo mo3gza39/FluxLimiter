@@ -14,7 +14,8 @@ public sealed class MainForm : Form
     private readonly DataGridView grid = new();
     private readonly TextBox search = new();
     private readonly ComboBox filter = new();
-    private readonly System.Windows.Forms.Timer refresh = new() { Interval = 2500 };
+    private readonly System.Windows.Forms.Timer refresh = new() { Interval = 5000 };
+    private bool reloading;
     private readonly System.Windows.Forms.Timer speedTimer = new() { Interval = 1000 };
     private readonly Label status = new();
     private readonly Color bg = Color.FromArgb(16, 22, 34);
@@ -55,6 +56,7 @@ public sealed class MainForm : Form
         grid.AllowUserToAddRows = false;
         grid.AllowUserToDeleteRows = false;
         grid.ReadOnly = true;
+        grid.MultiSelect = false;
         grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
         grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
         grid.EnableHeadersVisualStyles = false;
@@ -85,7 +87,7 @@ public sealed class MainForm : Form
         Controls.Add(grid);
         Controls.Add(bottom);
         Controls.Add(top);
-        refresh.Tick += (_, _) => Reload();
+        refresh.Tick += (_, _) => { if (!reloading && !grid.ContainsFocus) Reload(); };
         refresh.Start();
         speedTimer.Tick += (_, _) => { try { var rates = network.Sample(); speed.Text = $"Device adapters: ↓ {rates.DownloadKBps:F1} KB/s  ↑ {rates.UploadKBps:F1} KB/s  •  Not per-app; VPN/virtual adapters may double-count"; } catch (Exception ex) when (ex is System.Net.NetworkInformation.NetworkInformationException or InvalidOperationException) { speed.Text = "Device speed unavailable"; } };
         speedTimer.Start();
@@ -103,31 +105,60 @@ public sealed class MainForm : Form
 
     private void Reload()
     {
-        string query = search.Text.Trim();
-        string? selectedPath = grid.SelectedRows.Count > 0 ? grid.SelectedRows[0].Cells["path"].Value?.ToString() : null;
-        grid.Rows.Clear();
-        int count = 0;
-        foreach (var p in Process.GetProcesses().OrderBy(p => p.ProcessName))
+        if (reloading) return;
+        reloading = true;
+        try
         {
+            string query = search.Text.Trim();
+            int? selectedPid = grid.CurrentRow?.Cells["pid"].Value is int pid ? pid : null;
+            string? selectedPath = grid.CurrentRow?.Cells["path"].Value?.ToString();
+            int firstVisible = grid.FirstDisplayedScrollingRowIndex;
+
+            var rows = new List<object[]>();
+            foreach (var p in Process.GetProcesses().OrderBy(p => p.ProcessName))
+            {
+                try
+                {
+                    string name = p.ProcessName;
+                    string path;
+                    try { path = p.MainModule?.FileName ?? ""; } catch { path = ""; }
+                    if (!name.Contains(query, StringComparison.OrdinalIgnoreCase) && !path.Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
+                    bool isSystem = path.StartsWith(Environment.GetFolderPath(Environment.SpecialFolder.Windows), StringComparison.OrdinalIgnoreCase);
+                    if (filter.SelectedIndex == 1 && isSystem) continue;
+                    if (filter.SelectedIndex == 2 && !isSystem) continue;
+                    var rule = RuleCatalog.Find(settings, path);
+                    rows.Add(new object[] { name, p.Id, path, rule?.DownloadLimitKBps?.ToString() ?? "Unlimited", rule?.UploadLimitKBps?.ToString() ?? "Unlimited", rule?.Blocked == true ? "Yes" : "No" });
+                }
+                catch (InvalidOperationException) { }
+                catch (System.ComponentModel.Win32Exception) { }
+                finally { p.Dispose(); }
+            }
+
+            grid.SuspendLayout();
             try
             {
-                string name = p.ProcessName;
-                string path;
-                try { path = p.MainModule?.FileName ?? ""; } catch { path = ""; }
-                if (!name.Contains(query, StringComparison.OrdinalIgnoreCase) && !path.Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
-                bool isSystem = path.StartsWith(Environment.GetFolderPath(Environment.SpecialFolder.Windows), StringComparison.OrdinalIgnoreCase);
-                if (filter.SelectedIndex == 1 && isSystem) continue;
-                if (filter.SelectedIndex == 2 && !isSystem) continue;
-                var rule = RuleCatalog.Find(settings, path);
-                int row = grid.Rows.Add(name, p.Id, path, rule?.DownloadLimitKBps?.ToString() ?? "Unlimited", rule?.UploadLimitKBps?.ToString() ?? "Unlimited", rule?.Blocked == true ? "Yes" : "No");
-                if (path == selectedPath) grid.Rows[row].Selected = true;
-                count++;
+                grid.Rows.Clear();
+                int selectedIndex = -1;
+                for (int i = 0; i < rows.Count; i++)
+                {
+                    int row = grid.Rows.Add(rows[i]);
+                    if (selectedPid.HasValue && Equals(rows[i][1], selectedPid.Value) &&
+                        string.Equals(rows[i][2]?.ToString(), selectedPath, StringComparison.OrdinalIgnoreCase))
+                        selectedIndex = row;
+                }
+                grid.ClearSelection();
+                if (selectedIndex >= 0)
+                {
+                    grid.Rows[selectedIndex].Selected = true;
+                    grid.CurrentCell = grid.Rows[selectedIndex].Cells[0];
+                }
+                if (firstVisible >= 0 && firstVisible < grid.Rows.Count)
+                    grid.FirstDisplayedScrollingRowIndex = firstVisible;
             }
-            catch (InvalidOperationException) { }
-            catch (System.ComponentModel.Win32Exception) { }
-            finally { p.Dispose(); }
+            finally { grid.ResumeLayout(); }
+            status.Text = rows.Count.ToString(CultureInfo.InvariantCulture) + " processes  •  Rules are NOT enforced  •  Right-click for actions";
         }
-        status.Text = count.ToString(CultureInfo.InvariantCulture) + " processes  •  Rules are NOT enforced  •  Right-click for actions";
+        finally { reloading = false; }
     }
 
     private void EditRule(int index)
