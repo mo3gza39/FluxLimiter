@@ -51,4 +51,9 @@ Assert(Math.Abs(pacer.Schedule("other", true, 1, 1024, 0)) < 0.000001, "Other pr
 pacer.Clear("browser");
 Assert(Math.Abs(pacer.Schedule("browser", true, 1, 1024, 0)) < 0.000001, "Clear resets directional budget");
 
+
+Assert(RuleCatalog.ProcessKey(100, @"C:\Apps\browser.exe") != RuleCatalog.ProcessKey(101, @"C:\Apps\browser.exe"), "Same executable with different PIDs has distinct UI identity");
+Assert(RuleCatalog.NormalizePath(@" C:\Apps\browser.exe ") == RuleCatalog.NormalizePath(@"C:\Apps\browser.exe"), "Rule paths normalize consistently");
+Assert(!RuleCatalog.ValidLimit(0) && !RuleCatalog.ValidLimit(-1) && RuleCatalog.ValidLimit(null) && RuleCatalog.ValidLimit(1), "Limit validation rejects zero and negatives");
+
 Console.WriteLine("All deterministic core tests passed. No OS network enforcement tested.");
