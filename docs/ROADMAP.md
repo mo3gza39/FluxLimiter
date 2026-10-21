@@ -12,6 +12,14 @@ Private, independent Windows bandwidth-control application. No AI, no NetLimiter
 
 **Important:** No network counters, bandwidth throttling, blocking, service, SQLite database, startup registration, weekly/monthly statistics, or Excel export are implemented yet. Rule editor is storage-only. UI closing stops process enumeration. The workflow build result must be verified in Actions.
 
+## Required feature — Windows 11 taskbar network speed display
+- Show real-time aggregate download and upload speed near the Windows clock, as readable text (not merely a notification icon).
+- Refresh approximately once per second; auto-format KB/s and MB/s.
+- User can show/hide the indicator; persist preference and restore on Windows login.
+- Measure selected network adapter(s) using Windows network interface counters, separate from per-process accounting.
+- Test Windows 11 taskbar embedding/placement, DPI, multi-monitor and Explorer restart recovery. Do not claim integration works before testing.
+- Keep network sampling lightweight and avoid double counting multiple adapters.
+
 ## Milestone 1 — traffic measurement
 - Prototype process attribution via supported Windows APIs (ETW/WFP)
 - Investigate accounting correctness for shared processes, IPv4/IPv6, UDP, loopback
