@@ -48,6 +48,14 @@ public sealed class SharedRateLimiter
         }
     }
 
+    // The caller must split payloads larger than the one-second bucket capacity.
+    // Direction-specific keys keep download and upload accounting independent.
+    public static string DirectionKey(string scope, bool download)
+    {
+        if (string.IsNullOrWhiteSpace(scope)) throw new ArgumentException("Scope is required.", nameof(scope));
+        return (download ? "down:" : "up:") + scope.Trim();
+    }
+
     public void Remove(string identity)
     {
         lock (gate) buckets.Remove(identity);
