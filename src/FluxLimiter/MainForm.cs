@@ -9,10 +9,13 @@ namespace FluxLimiter;
 public sealed class MainForm : Form
 {
     private readonly AppSettings settings = SettingsStore.Load();
+    private readonly NetworkSampler network = new();
+    private readonly Label speed = new();
     private readonly DataGridView grid = new();
     private readonly TextBox search = new();
     private readonly ComboBox filter = new();
     private readonly System.Windows.Forms.Timer refresh = new() { Interval = 2500 };
+    private readonly System.Windows.Forms.Timer speedTimer = new() { Interval = 1000 };
     private readonly Label status = new();
     private readonly Color bg = Color.FromArgb(16, 22, 34);
     private readonly Color panel = Color.FromArgb(25, 34, 49);
@@ -69,7 +72,11 @@ public sealed class MainForm : Form
         grid.Columns.Add("block", "Blocked");
         grid.CellDoubleClick += (_, e) => { if (e.RowIndex >= 0) EditRule(e.RowIndex); };
 
-        var bottom = new Panel { Dock = DockStyle.Bottom, Height = 55, BackColor = panel };
+        var bottom = new Panel { Dock = DockStyle.Bottom, Height = 76, BackColor = panel };
+        speed.SetBounds(20, 42, 800, 25);
+        speed.ForeColor = Color.FromArgb(91, 225, 184);
+        speed.Text = "Device traffic: sampling... (not per-app; virtual adapters may double-count)";
+        bottom.Controls.Add(speed);
         status.AutoSize = true;
         status.Left = 20;
         status.Top = 18;
@@ -80,6 +87,9 @@ public sealed class MainForm : Form
         Controls.Add(top);
         refresh.Tick += (_, _) => Reload();
         refresh.Start();
+        speedTimer.Tick += (_, _) => { try { var rates = network.Sample(); speed.Text = $"Device adapters: ↓ {rates.DownloadKBps:F1} KB/s  ↑ {rates.UploadKBps:F1} KB/s  •  Not per-app; VPN/virtual adapters may double-count"; } catch (Exception ex) when (ex is System.Net.NetworkInformation.NetworkInformationException or InvalidOperationException) { speed.Text = "Device speed unavailable"; } };
+        speedTimer.Start();
+        SetupContextMenu();
         Reload();
     }
 
@@ -108,8 +118,8 @@ public sealed class MainForm : Form
                 bool isSystem = path.StartsWith(Environment.GetFolderPath(Environment.SpecialFolder.Windows), StringComparison.OrdinalIgnoreCase);
                 if (filter.SelectedIndex == 1 && isSystem) continue;
                 if (filter.SelectedIndex == 2 && !isSystem) continue;
-                var rule = settings.Rules.FirstOrDefault(r => string.Equals(r.ExecutablePath, path, StringComparison.OrdinalIgnoreCase));
-                int row = grid.Rows.Add(name, p.Id, path, rule?.DownloadLimitKbps?.ToString() ?? "Unlimited", rule?.UploadLimitKbps?.ToString() ?? "Unlimited", rule?.Blocked == true ? "Yes" : "No");
+                var rule = RuleCatalog.Find(settings, path);
+                int row = grid.Rows.Add(name, p.Id, path, rule?.DownloadLimitKBps?.ToString() ?? "Unlimited", rule?.UploadLimitKBps?.ToString() ?? "Unlimited", rule?.Blocked == true ? "Yes" : "No");
                 if (path == selectedPath) grid.Rows[row].Selected = true;
                 count++;
             }
@@ -117,7 +127,7 @@ public sealed class MainForm : Form
             catch (System.ComponentModel.Win32Exception) { }
             finally { p.Dispose(); }
         }
-        status.Text = count.ToString(CultureInfo.InvariantCulture) + " processes  •  Double-click to edit a saved rule  •  Limits are NOT enforced yet";
+        status.Text = count.ToString(CultureInfo.InvariantCulture) + " processes  •  Rules are NOT enforced  •  Right-click for actions";
     }
 
     private void EditRule(int index)
@@ -149,12 +159,12 @@ public sealed class MainForm : Form
             return;
         }
         rule ??= new AppRule { ExecutablePath = path };
-        rule.DownloadLimitKbps = down;
-        rule.UploadLimitKbps = up;
+        rule.DownloadLimitKBps = down;
+        rule.UploadLimitKBps = up;
         rule.Blocked = blocked.Checked;
         if (!settings.Rules.Contains(rule)) settings.Rules.Add(rule);
         try { SettingsStore.Save(settings); }
-        catch (IOException ex) { MessageBox.Show(ex.Message, "Unable to save settings"); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { MessageBox.Show(ex.Message, "Unable to save settings"); }
         Reload();
     }
 
@@ -167,6 +177,48 @@ public sealed class MainForm : Form
         return true;
     }
 
+    private void SetupContextMenu()
+    {
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("Open File Location", null, (_, _) => WithSelectedPath(path =>
+        {
+            try { Process.Start(new ProcessStartInfo("explorer.exe", "/select,\\"" + path + "\\"") { UseShellExecute = true }); }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { MessageBox.Show(ex.Message); }
+        }));
+        menu.Items.Add("Properties", null, (_, _) => WithSelectedPath(path =>
+        {
+            try { Process.Start(new ProcessStartInfo("rundll32.exe", "shell32.dll,ShellExec_RunDLL properties \\"" + path + "\\"") { UseShellExecute = true }); }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { MessageBox.Show(ex.Message); }
+        }));
+        menu.Items.Add("Set Speed Limit (saved only)", null, (_, _) => { if (grid.CurrentRow is not null) EditRule(grid.CurrentRow.Index); });
+        menu.Items.Add("Block Internet (not enforced)", null, (_, _) => { if (grid.CurrentRow is not null) EditRule(grid.CurrentRow.Index); });
+        menu.Items.Add("Usage Statistics (not implemented)", null, (_, _) => MessageBox.Show("Per-app traffic attribution is not implemented yet."));
+        menu.Items.Add("Copy File Path", null, (_, _) => WithSelectedPath(path => Clipboard.SetText(path)));
+        menu.Items.Add("View Process Details", null, (_, _) =>
+        {
+            if (grid.CurrentRow is null) return;
+            MessageBox.Show("PID: " + grid.CurrentRow.Cells["pid"].Value + Environment.NewLine +
+                "Executable: " + grid.CurrentRow.Cells["path"].Value, "Process details");
+        });
+        grid.ContextMenuStrip = menu;
+        grid.CellMouseDown += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Right && e.RowIndex >= 0)
+            {
+                grid.ClearSelection();
+                grid.Rows[e.RowIndex].Selected = true;
+                grid.CurrentCell = grid.Rows[e.RowIndex].Cells[0];
+            }
+        };
+    }
+
+    private void WithSelectedPath(Action<string> action)
+    {
+        var path = grid.CurrentRow?.Cells["path"].Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(path)) { MessageBox.Show("Executable path unavailable."); return; }
+        action(path);
+    }
+
     private void ExportCsv()
     {
         using var dialog = new SaveFileDialog { Filter = "CSV (*.csv)|*.csv", FileName = "fluxlimiter-processes.csv" };
@@ -175,6 +227,7 @@ public sealed class MainForm : Form
         csv.AppendLine("Application,PID,Executable,DownloadLimitKBps,UploadLimitKBps,Blocked");
         foreach (DataGridViewRow row in grid.Rows)
             csv.AppendLine(string.Join(",", row.Cells.Cast<DataGridViewCell>().Select(c => "\"" + (c.Value?.ToString() ?? "").Replace("\"", "\"\"") + "\"")));
-        File.WriteAllText(dialog.FileName, csv.ToString(), new UTF8Encoding(true));
+        try { File.WriteAllText(dialog.FileName, csv.ToString(), new UTF8Encoding(true)); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { MessageBox.Show(ex.Message, "Export failed"); }
     }
 }
