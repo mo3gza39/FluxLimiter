@@ -19,6 +19,8 @@ jobs:
         run: dotnet restore src/FluxLimiter/FluxLimiter.csproj
       - name: Build
         run: dotnet build src/FluxLimiter/FluxLimiter.csproj -c Release --no-restore
+      - name: Run deterministic scheduler tests
+        run: dotnet run --project tests/FluxLimiter.CoreTests/FluxLimiter.CoreTests.csproj -c Release
       - name: Publish portable executable
         run: dotnet publish src/FluxLimiter/FluxLimiter.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableWindowsTargeting=true -o dist
       - uses: actions/upload-artifact@v4
