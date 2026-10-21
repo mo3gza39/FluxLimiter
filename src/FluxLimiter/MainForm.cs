@@ -16,7 +16,9 @@ public sealed class MainForm : Form
     private readonly ComboBox filter = new();
     private readonly System.Windows.Forms.Timer refresh = new() { Interval = 5000 };
     private bool reloading;
+    private bool refreshQueued;
     private bool settingsSaveDisabled;
+    private readonly System.Windows.Forms.Timer searchDebounce = new() { Interval = 300 };
     private readonly System.Windows.Forms.Timer speedTimer = new() { Interval = 1000 };
     private readonly Label status = new();
     private readonly Label processCount = new();
@@ -46,12 +48,12 @@ public sealed class MainForm : Form
         ruleCount.SetBounds(965, 24, 170, 54); ruleCount.Font = new Font("Segoe UI Semibold", 13); ruleCount.ForeColor = ink; ruleCount.TextAlign = ContentAlignment.MiddleCenter; ruleCount.BackColor = bg;
         search.SetBounds(28, 116, 390, 34);
         search.PlaceholderText = "Search application or executable...";
-        search.TextChanged += (_, _) => Reload();
+        search.TextChanged += (_, _) => { searchDebounce.Stop(); searchDebounce.Start(); };
         filter.SetBounds(432, 116, 175, 34);
         filter.DropDownStyle = ComboBoxStyle.DropDownList;
         filter.Items.AddRange(new object[] { "All processes", "User processes", "System processes" });
         filter.SelectedIndex = 0;
-        filter.SelectedIndexChanged += (_, _) => Reload();
+        filter.SelectedIndexChanged += (_, _) => QueueReload();
         var export = Button("Export CSV", 624, 116, 120, (_, _) => ExportCsv()); export.Height = 34;
         var reload = Button("Refresh", 756, 116, 105, (_, _) => Reload()); reload.Height = 34;
         top.Controls.AddRange(new Control[] { title, subtitle, processCount, ruleCount, search, filter, export, reload });
@@ -172,7 +174,8 @@ public sealed class MainForm : Form
         shell.Controls.Add(dashboard);
         shell.Controls.Add(sidebar);
         Controls.Add(shell);
-        refresh.Tick += async (_, _) => { if (!reloading && !grid.ContainsFocus && grid.ContextMenuStrip?.Visible != true) await ReloadAsync(); };
+        searchDebounce.Tick += (_, _) => { searchDebounce.Stop(); QueueReload(); };
+        refresh.Tick += (_, _) => { if (!grid.ContainsFocus && grid.ContextMenuStrip?.Visible != true) QueueReload(); };
         refresh.Start();
         speedTimer.Tick += (_, _) => { try { var rates = network.Sample(); speed.Text = $"Live traffic    ↓ {rates.DownloadKBps:F1} KB/s     ↑ {rates.UploadKBps:F1} KB/s"; } catch (Exception ex) when (ex is System.Net.NetworkInformation.NetworkInformationException or InvalidOperationException) { speed.Text = "Device speed unavailable"; } };
         speedTimer.Start();
@@ -214,9 +217,17 @@ public sealed class MainForm : Form
 
     private sealed record ProcessRow(string Name, int Pid, string Path, bool IsSystem);
 
+    private void QueueReload()
+    {
+        if (IsDisposed) return;
+        if (reloading) { refreshQueued = true; return; }
+        _ = ReloadAsync();
+    }
+
     private async Task ReloadAsync()
     {
-        if (reloading || IsDisposed) return;
+        if (IsDisposed) return;
+        if (reloading) { refreshQueued = true; return; }
         reloading = true;
         try
         {
@@ -263,7 +274,15 @@ public sealed class MainForm : Form
             processCount.Text = rows.Count.ToString(CultureInfo.InvariantCulture) + "  Processes";
             ruleCount.Text = settings.Rules.Count.ToString(CultureInfo.InvariantCulture) + "  Saved rules";
         }
-        finally { reloading = false; }
+        finally
+        {
+            reloading = false;
+            if (refreshQueued && !IsDisposed)
+            {
+                refreshQueued = false;
+                BeginInvoke((Action)QueueReload);
+            }
+        }
     }
 
     private static List<ProcessRow> SnapshotProcesses(string query, int filterIndex)
@@ -290,7 +309,7 @@ public sealed class MainForm : Form
         return rows;
     }
 
-    private void Reload() => _ = ReloadAsync();
+    private void Reload() => QueueReload();
 
     private void SaveInlineRule(int rowIndex)
     {
@@ -307,9 +326,7 @@ public sealed class MainForm : Form
         rule.DownloadLimitKBps = down;
         rule.UploadLimitKBps = up;
         if (!settings.Rules.Contains(rule)) settings.Rules.Add(rule);
-        if (settingsSaveDisabled) { MessageBox.Show("Settings cannot be saved because the previous settings file could not be safely preserved."); return; }
-        try { SettingsStore.Save(settings); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { MessageBox.Show(ex.Message, "Unable to save settings"); }
+        if (!TrySaveSettings()) return;
         Reload();
     }
 
@@ -346,8 +363,7 @@ public sealed class MainForm : Form
         rule.UploadLimitKBps = up;
         rule.Blocked = blocked.Checked;
         if (!settings.Rules.Contains(rule)) settings.Rules.Add(rule);
-        try { SettingsStore.Save(settings); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { MessageBox.Show(ex.Message, "Unable to save settings"); }
+        if (!TrySaveSettings()) return;
         Reload();
     }
 
@@ -406,9 +422,27 @@ public sealed class MainForm : Form
             settings.Rules.Add(rule);
         }
         else rule.Blocked = !rule.Blocked;
-        try { SettingsStore.Save(settings); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { MessageBox.Show(ex.Message, "Unable to save settings"); return; }
+        if (!TrySaveSettings()) return;
         Reload();
+    }
+
+    private bool TrySaveSettings()
+    {
+        if (settingsSaveDisabled)
+        {
+            MessageBox.Show("Settings cannot be saved because the previous settings file could not be safely preserved.", "Saving disabled");
+            return false;
+        }
+        try
+        {
+            SettingsStore.Save(settings);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(ex.Message, "Unable to save settings");
+            return false;
+        }
     }
 
     private void WithSelectedPath(Action<string> action)
