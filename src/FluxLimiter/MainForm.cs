@@ -140,8 +140,8 @@ public sealed class MainForm : Form
         }
         var rule = settings.Rules.FirstOrDefault(r => string.Equals(r.ExecutablePath, path, StringComparison.OrdinalIgnoreCase));
         using var dialog = new Form { Text = "Saved rule — " + Path.GetFileName(path), Width = 450, Height = 260, StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false };
-        var dl = new TextBox { Left = 170, Top = 25, Width = 225, Text = rule?.DownloadLimitKbps?.ToString() ?? "" };
-        var ul = new TextBox { Left = 170, Top = 65, Width = 225, Text = rule?.UploadLimitKbps?.ToString() ?? "" };
+        var dl = new TextBox { Left = 170, Top = 25, Width = 225, Text = rule?.DownloadLimitKBps?.ToString() ?? "" };
+        var ul = new TextBox { Left = 170, Top = 65, Width = 225, Text = rule?.UploadLimitKBps?.ToString() ?? "" };
         var blocked = new CheckBox { Left = 170, Top = 105, Text = "Block application", Checked = rule?.Blocked ?? false, AutoSize = true };
         dialog.Controls.AddRange(new Control[] {
             new Label { Text = "Download KB/s", Left = 18, Top = 28, AutoSize = true },
