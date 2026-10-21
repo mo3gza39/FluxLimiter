@@ -32,4 +32,6 @@ public static class RuleCatalog
     }
 
     public static bool ValidLimit(int? value) => value is null || value > 0;
+
+    public static string ProcessKey(int pid, string path) => pid.ToString(System.Globalization.CultureInfo.InvariantCulture) + "|" + NormalizePath(path);
 }
