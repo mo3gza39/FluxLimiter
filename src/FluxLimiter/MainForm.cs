@@ -42,21 +42,40 @@ public sealed class MainForm : Form
         AutoScaleMode = AutoScaleMode.Dpi;
 
         var top = new Panel { Dock = DockStyle.Top, Height = 176, BackColor = panel, Padding = new Padding(28, 18, 28, 14) };
-        var title = new Label { Text = "FluxLimiter", Font = new Font("Segoe UI Semibold", 26), ForeColor = Color.FromArgb(91, 225, 184), Left = 28, Top = 16, AutoSize = true };
-        var subtitle = new Label { Text = "Network control dashboard", Left = 30, Top = 62, AutoSize = true, ForeColor = Color.FromArgb(155, 171, 190) };
-        processCount.SetBounds(780, 24, 170, 54); processCount.Font = new Font("Segoe UI Semibold", 13); processCount.ForeColor = ink; processCount.TextAlign = ContentAlignment.MiddleCenter; processCount.BackColor = bg;
-        ruleCount.SetBounds(965, 24, 170, 54); ruleCount.Font = new Font("Segoe UI Semibold", 13); ruleCount.ForeColor = ink; ruleCount.TextAlign = ContentAlignment.MiddleCenter; ruleCount.BackColor = bg;
-        search.SetBounds(28, 116, 390, 34);
+        var headerLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = panel };
+        headerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 55));
+        headerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 45));
+
+        var headingRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, BackColor = panel };
+        headingRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        headingRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+        headingRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+        var headingText = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = panel };
+        var title = new Label { Text = "FluxLimiter", Font = new Font("Segoe UI Semibold", 26), ForeColor = Color.FromArgb(91, 225, 184), AutoSize = true, Margin = new Padding(0) };
+        var subtitle = new Label { Text = "Network control dashboard", AutoSize = true, ForeColor = Color.FromArgb(155, 171, 190), Margin = new Padding(2, 4, 0, 0) };
+        headingText.Controls.Add(title); headingText.Controls.Add(subtitle);
+        processCount.Dock = DockStyle.Fill; processCount.Margin = new Padding(8); processCount.Font = new Font("Segoe UI Semibold", 13); processCount.ForeColor = ink; processCount.TextAlign = ContentAlignment.MiddleCenter; processCount.BackColor = bg;
+        ruleCount.Dock = DockStyle.Fill; ruleCount.Margin = new Padding(8); ruleCount.Font = new Font("Segoe UI Semibold", 13); ruleCount.ForeColor = ink; ruleCount.TextAlign = ContentAlignment.MiddleCenter; ruleCount.BackColor = bg;
+        headingRow.Controls.Add(headingText, 0, 0); headingRow.Controls.Add(processCount, 1, 0); headingRow.Controls.Add(ruleCount, 2, 0);
+
+        var toolbar = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 1, BackColor = panel };
+        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
+        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
+        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 115));
+        search.Dock = DockStyle.Fill; search.Margin = new Padding(0, 8, 12, 8);
         search.PlaceholderText = "Search application or executable...";
         search.TextChanged += (_, _) => { searchDebounce.Stop(); searchDebounce.Start(); };
-        filter.SetBounds(432, 116, 175, 34);
+        filter.Dock = DockStyle.Fill; filter.Margin = new Padding(0, 8, 12, 8);
         filter.DropDownStyle = ComboBoxStyle.DropDownList;
         filter.Items.AddRange(new object[] { "All processes", "User processes", "System processes" });
         filter.SelectedIndex = 0;
         filter.SelectedIndexChanged += (_, _) => QueueReload();
-        var export = Button("Export CSV", 624, 116, 120, (_, _) => ExportCsv()); export.Height = 34;
-        var reload = Button("Refresh", 756, 116, 105, (_, _) => Reload()); reload.Height = 34;
-        top.Controls.AddRange(new Control[] { title, subtitle, processCount, ruleCount, search, filter, export, reload });
+        var export = Button("Export CSV", 0, 0, 0, (_, _) => ExportCsv()); export.Dock = DockStyle.Fill; export.Margin = new Padding(0, 8, 12, 8);
+        var reload = Button("Refresh", 0, 0, 0, (_, _) => Reload()); reload.Dock = DockStyle.Fill; reload.Margin = new Padding(0, 8, 0, 8);
+        toolbar.Controls.Add(search, 0, 0); toolbar.Controls.Add(filter, 1, 0); toolbar.Controls.Add(export, 2, 0); toolbar.Controls.Add(reload, 3, 0);
+        headerLayout.Controls.Add(headingRow, 0, 0); headerLayout.Controls.Add(toolbar, 0, 1);
+        top.Controls.Add(headerLayout);
 
         grid.Dock = DockStyle.Fill;
         grid.BackgroundColor = bg;
@@ -351,18 +370,28 @@ public sealed class MainForm : Form
             return;
         }
         var rule = settings.Rules.FirstOrDefault(r => string.Equals(r.ExecutablePath, path, StringComparison.OrdinalIgnoreCase));
-        using var dialog = new Form { Text = "Saved rule — " + Path.GetFileName(path), Width = 450, Height = 260, StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, BackColor = panel, ForeColor = ink, Font = Font };
-        var dl = new TextBox { Left = 170, Top = 25, Width = 225, Text = rule?.DownloadLimitKBps?.ToString() ?? "", BackColor = bg, ForeColor = ink };
-        var ul = new TextBox { Left = 170, Top = 65, Width = 225, Text = rule?.UploadLimitKBps?.ToString() ?? "", BackColor = bg, ForeColor = ink };
-        var blocked = new CheckBox { Left = 170, Top = 105, Text = "Block application", Checked = rule?.Blocked ?? false, AutoSize = true };
-        dialog.Controls.AddRange(new Control[] {
-            new Label { Text = "Download KB/s", Left = 18, Top = 28, AutoSize = true },
-            new Label { Text = "Upload KB/s", Left = 18, Top = 68, AutoSize = true },
-            dl, ul, blocked,
-            new Label { Text = "Blank = unlimited. Rules saved but not enforced in this preview.", Left = 18, Top = 143, Width = 410, Height = 34 }
-        });
-        var save = new Button { Text = "Save rule", Left = 280, Top = 176, Width = 115, DialogResult = DialogResult.OK, BackColor = Color.FromArgb(45, 74, 91), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
-        dialog.Controls.Add(save);
+        using var dialog = new Form { Text = "Saved rule — " + Path.GetFileName(path), ClientSize = new Size(460, 250), StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, BackColor = panel, ForeColor = ink, Font = Font, AutoScaleMode = AutoScaleMode.Dpi };
+        var formLayout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 2, RowCount = 5, BackColor = panel };
+        formLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
+        formLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62));
+        formLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        formLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        formLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        formLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        formLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        var dl = new TextBox { Dock = DockStyle.Fill, Text = rule?.DownloadLimitKBps?.ToString() ?? "", BackColor = bg, ForeColor = ink, Margin = new Padding(6) };
+        var ul = new TextBox { Dock = DockStyle.Fill, Text = rule?.UploadLimitKBps?.ToString() ?? "", BackColor = bg, ForeColor = ink, Margin = new Padding(6) };
+        var blocked = new CheckBox { Text = "Block application", Checked = rule?.Blocked ?? false, AutoSize = true, Anchor = AnchorStyles.Left };
+        formLayout.Controls.Add(new Label { Text = "Download KB/s", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
+        formLayout.Controls.Add(dl, 1, 0);
+        formLayout.Controls.Add(new Label { Text = "Upload KB/s", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
+        formLayout.Controls.Add(ul, 1, 1);
+        formLayout.Controls.Add(blocked, 1, 2);
+        var note = new Label { Text = "Blank = unlimited. Rules saved but not enforced in this preview.", Dock = DockStyle.Fill, AutoSize = false, TextAlign = ContentAlignment.MiddleLeft };
+        formLayout.SetColumnSpan(note, 2); formLayout.Controls.Add(note, 0, 3);
+        var save = new Button { Text = "Save rule", DialogResult = DialogResult.OK, BackColor = Color.FromArgb(45, 74, 91), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Dock = DockStyle.Right, Width = 120, Margin = new Padding(6) };
+        formLayout.Controls.Add(save, 1, 4);
+        dialog.Controls.Add(formLayout);
         dialog.AcceptButton = save;
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         if (!TryLimit(dl.Text, out var down) || !TryLimit(ul.Text, out var up))
