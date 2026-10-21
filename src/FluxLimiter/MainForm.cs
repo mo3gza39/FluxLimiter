@@ -131,34 +131,44 @@ public sealed class MainForm : Form
             sidebar.Controls.Add(n);
         }
 
-        var dashboard = new Panel { Dock = DockStyle.Fill, BackColor = bg, AutoScroll = true };
-        top.Dock = DockStyle.None; top.SetBounds(28, 20, 1160, 166); top.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        var dashboard = new Panel { Dock = DockStyle.Fill, BackColor = bg, AutoScroll = true, Padding = new Padding(28, 20, 28, 20) };
+        top.Dock = DockStyle.Top; top.Height = 166; top.Margin = new Padding(0, 0, 0, 16);
         title.Text = "Dashboard"; title.ForeColor = ink;
         subtitle.Text = "Monitor and control application network activity";
         processCount.Text = "Processes"; ruleCount.Text = "Saved rules";
 
-        var summary = new TableLayoutPanel { Left = 28, Top = 202, Width = 1160, Height = 104, ColumnCount = 4, RowCount = 1, BackColor = bg, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+        var summary = new TableLayoutPanel { Dock = DockStyle.Top, Height = 104, ColumnCount = 4, RowCount = 1, BackColor = bg, Margin = new Padding(0, 16, 0, 16), Padding = new Padding(0) };
         for (int i = 0; i < 4; i++) summary.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
         summary.Controls.Add(DashboardCard("DOWNLOAD", speed, "Live device traffic"), 0, 0);
         summary.Controls.Add(DashboardCard("UPLOAD", new Label { Text = "Live", ForeColor = ink, Font = new Font("Segoe UI Semibold", 17) }, "Live device traffic"), 1, 0);
         summary.Controls.Add(DashboardCard("DAILY USAGE", dailyUsage, "Collector not connected"), 2, 0);
         summary.Controls.Add(DashboardCard("MONTHLY USAGE", monthlyUsage, "Collector not connected"), 3, 0);
 
-        var topApps = DashboardPlaceholder("Top Applications", "Today", "Per-application traffic attribution is not connected yet.", 28, 324, 565, 160);
-        var sevenDays = DashboardPlaceholder("Daily Usage", "Last 7 days", "Usage history will appear here after the collector is implemented.", 608, 324, 580, 160);
-        sevenDays.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        var middle = new TableLayoutPanel { Dock = DockStyle.Top, Height = 176, ColumnCount = 2, RowCount = 1, BackColor = bg, Margin = new Padding(0, 16, 0, 16) };
+        middle.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        middle.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        var topApps = DashboardPlaceholder("Top Applications", "Today", "Per-application traffic attribution is not connected yet.", 0, 0, 0, 160);
+        var sevenDays = DashboardPlaceholder("Daily Usage", "Last 7 days", "Usage history will appear here after the collector is implemented.", 0, 0, 0, 160);
+        topApps.Dock = DockStyle.Fill; topApps.Margin = new Padding(0, 0, 8, 0);
+        sevenDays.Dock = DockStyle.Fill; sevenDays.Margin = new Padding(8, 0, 0, 0);
+        middle.Controls.Add(topApps, 0, 0); middle.Controls.Add(sevenDays, 1, 0);
 
-        var active = new Panel { Left = 28, Top = 502, Width = 1160, Height = 330, BackColor = panel, Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right };
+        var active = new Panel { Dock = DockStyle.Fill, BackColor = panel, Margin = new Padding(0, 16, 0, 0) };
         active.Controls.Add(new Label { Text = "Active Applications", Left = 20, Top = 14, Width = 260, Height = 32, Font = new Font("Segoe UI Semibold", 15), ForeColor = ink });
         grid.Dock = DockStyle.None; grid.SetBounds(20, 54, 1120, 252); grid.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         active.Controls.Add(grid);
 
         bottom.Visible = false;
-        dashboard.Controls.Add(active);
-        dashboard.Controls.Add(sevenDays);
-        dashboard.Controls.Add(topApps);
-        dashboard.Controls.Add(summary);
-        dashboard.Controls.Add(top);
+        var content = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, BackColor = bg };
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 166));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 192));
+        content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        content.Controls.Add(top, 0, 0);
+        content.Controls.Add(summary, 0, 1);
+        content.Controls.Add(middle, 0, 2);
+        content.Controls.Add(active, 0, 3);
+        dashboard.Controls.Add(content);
         shell.Controls.Add(dashboard);
         shell.Controls.Add(sidebar);
         Controls.Add(shell);
@@ -187,7 +197,7 @@ public sealed class MainForm : Form
 
     private Panel DashboardPlaceholder(string heading, string period, string message, int x, int y, int width, int height)
     {
-        var card = new Panel { Left = x, Top = y, Width = width, Height = height, BackColor = panel };
+        var card = new Panel { Left = x, Top = y, Width = width, Height = height, BackColor = panel, MinimumSize = new Size(260, 130) };
         card.Controls.Add(new Label { Text = heading, Left = 20, Top = 14, Width = 260, Height = 30, Font = new Font("Segoe UI Semibold", 14), ForeColor = ink });
         card.Controls.Add(new Label { Text = period, Left = width - 145, Top = 18, Width = 120, Height = 22, TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.FromArgb(145, 159, 177), Anchor = AnchorStyles.Top | AnchorStyles.Right });
         card.Controls.Add(new Label { Text = message, Left = 24, Top = 66, Width = width - 48, Height = 50, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.FromArgb(145, 159, 177), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right });
