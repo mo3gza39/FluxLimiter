@@ -18,6 +18,8 @@ public sealed class MainForm : Form
     private bool reloading;
     private readonly System.Windows.Forms.Timer speedTimer = new() { Interval = 1000 };
     private readonly Label status = new();
+    private readonly Label processCount = new();
+    private readonly Label ruleCount = new();
     private readonly Color bg = Color.FromArgb(16, 22, 34);
     private readonly Color panel = Color.FromArgb(25, 34, 49);
     private readonly Color ink = Color.FromArgb(229, 237, 246);
@@ -25,28 +27,30 @@ public sealed class MainForm : Form
     public MainForm()
     {
         Text = "FluxLimiter — Network Control";
-        Width = 1100;
-        Height = 700;
-        MinimumSize = new Size(760, 490);
+        Width = 1280;
+        Height = 780;
+        MinimumSize = new Size(960, 600);
         BackColor = bg;
         ForeColor = ink;
         Font = new Font("Segoe UI", 10);
         StartPosition = FormStartPosition.CenterScreen;
 
-        var top = new Panel { Dock = DockStyle.Top, Height = 125, BackColor = panel };
-        var title = new Label { Text = "FLUXLIMITER", Font = new Font("Segoe UI Semibold", 23), ForeColor = Color.FromArgb(91, 225, 184), Left = 24, Top = 12, AutoSize = true };
-        var subtitle = new Label { Text = "Per-application bandwidth dashboard • development preview", Left = 26, Top = 60, AutoSize = true, ForeColor = Color.FromArgb(155, 171, 190) };
-        search.SetBounds(25, 89, 320, 26);
+        var top = new Panel { Dock = DockStyle.Top, Height = 176, BackColor = panel, Padding = new Padding(28, 18, 28, 14) };
+        var title = new Label { Text = "FluxLimiter", Font = new Font("Segoe UI Semibold", 26), ForeColor = Color.FromArgb(91, 225, 184), Left = 28, Top = 16, AutoSize = true };
+        var subtitle = new Label { Text = "Network control dashboard", Left = 30, Top = 62, AutoSize = true, ForeColor = Color.FromArgb(155, 171, 190) };
+        processCount.SetBounds(780, 24, 170, 54); processCount.Font = new Font("Segoe UI Semibold", 13); processCount.ForeColor = ink; processCount.TextAlign = ContentAlignment.MiddleCenter; processCount.BackColor = bg;
+        ruleCount.SetBounds(965, 24, 170, 54); ruleCount.Font = new Font("Segoe UI Semibold", 13); ruleCount.ForeColor = ink; ruleCount.TextAlign = ContentAlignment.MiddleCenter; ruleCount.BackColor = bg;
+        search.SetBounds(28, 116, 390, 34);
         search.PlaceholderText = "Search application or executable...";
         search.TextChanged += (_, _) => Reload();
-        filter.SetBounds(360, 89, 150, 26);
+        filter.SetBounds(432, 116, 175, 34);
         filter.DropDownStyle = ComboBoxStyle.DropDownList;
         filter.Items.AddRange(new object[] { "All processes", "User processes", "System processes" });
         filter.SelectedIndex = 0;
         filter.SelectedIndexChanged += (_, _) => Reload();
-        var export = Button("Export CSV", 525, 88, 110, (_, _) => ExportCsv());
-        var reload = Button("Refresh", 645, 88, 100, (_, _) => Reload());
-        top.Controls.AddRange(new Control[] { title, subtitle, search, filter, export, reload });
+        var export = Button("Export CSV", 624, 116, 120, (_, _) => ExportCsv()); export.Height = 34;
+        var reload = Button("Refresh", 756, 116, 105, (_, _) => Reload()); reload.Height = 34;
+        top.Controls.AddRange(new Control[] { title, subtitle, processCount, ruleCount, search, filter, export, reload });
 
         grid.Dock = DockStyle.Fill;
         grid.BackgroundColor = bg;
@@ -59,6 +63,12 @@ public sealed class MainForm : Form
         grid.MultiSelect = false;
         grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
         grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+        grid.RowTemplate.Height = 34;
+        grid.ColumnHeadersHeight = 38;
+        grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
+        grid.CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal;
+        grid.DefaultCellStyle.Padding = new Padding(8, 0, 8, 0);
+        grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(19, 27, 40);
         grid.EnableHeadersVisualStyles = false;
         grid.ColumnHeadersDefaultCellStyle.BackColor = panel;
         grid.ColumnHeadersDefaultCellStyle.ForeColor = ink;
@@ -74,14 +84,14 @@ public sealed class MainForm : Form
         grid.Columns.Add("block", "Blocked");
         grid.CellDoubleClick += (_, e) => { if (e.RowIndex >= 0) EditRule(e.RowIndex); };
 
-        var bottom = new Panel { Dock = DockStyle.Bottom, Height = 76, BackColor = panel };
-        speed.SetBounds(20, 42, 800, 25);
+        var bottom = new Panel { Dock = DockStyle.Bottom, Height = 68, BackColor = panel };
+        speed.SetBounds(28, 37, 900, 24);
         speed.ForeColor = Color.FromArgb(91, 225, 184);
         speed.Text = "Device traffic: sampling... (not per-app; virtual adapters may double-count)";
         bottom.Controls.Add(speed);
         status.AutoSize = true;
-        status.Left = 20;
-        status.Top = 18;
+        status.Left = 28;
+        status.Top = 12;
         status.ForeColor = Color.FromArgb(170, 185, 200);
         bottom.Controls.Add(status);
         Controls.Add(grid);
@@ -89,7 +99,7 @@ public sealed class MainForm : Form
         Controls.Add(top);
         refresh.Tick += (_, _) => { if (!reloading && !grid.ContainsFocus) Reload(); };
         refresh.Start();
-        speedTimer.Tick += (_, _) => { try { var rates = network.Sample(); speed.Text = $"Device adapters: ↓ {rates.DownloadKBps:F1} KB/s  ↑ {rates.UploadKBps:F1} KB/s  •  Not per-app; VPN/virtual adapters may double-count"; } catch (Exception ex) when (ex is System.Net.NetworkInformation.NetworkInformationException or InvalidOperationException) { speed.Text = "Device speed unavailable"; } };
+        speedTimer.Tick += (_, _) => { try { var rates = network.Sample(); speed.Text = $"Live traffic    ↓ {rates.DownloadKBps:F1} KB/s     ↑ {rates.UploadKBps:F1} KB/s"; } catch (Exception ex) when (ex is System.Net.NetworkInformation.NetworkInformationException or InvalidOperationException) { speed.Text = "Device speed unavailable"; } };
         speedTimer.Start();
         SetupContextMenu();
         Reload();
@@ -156,7 +166,9 @@ public sealed class MainForm : Form
                     grid.FirstDisplayedScrollingRowIndex = firstVisible;
             }
             finally { grid.ResumeLayout(); }
-            status.Text = rows.Count.ToString(CultureInfo.InvariantCulture) + " processes  •  Rules are NOT enforced  •  Right-click for actions";
+            status.Text = "Right-click an application for controls";
+            processCount.Text = rows.Count.ToString(CultureInfo.InvariantCulture) + "  Processes";
+            ruleCount.Text = settings.Rules.Count.ToString(CultureInfo.InvariantCulture) + "  Saved rules";
         }
         finally { reloading = false; }
     }
