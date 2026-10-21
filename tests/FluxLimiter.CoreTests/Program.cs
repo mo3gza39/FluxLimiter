@@ -33,4 +33,13 @@ model.Rules.Add(new AppRule { ExecutablePath = @"C:\Apps\steamwebhelper.exe", Gr
 Assert(RuleCatalog.Resolve(model, @"C:\Apps\steam.exe").DownKBps == 500, "Grouped app A resolves cap");
 Assert(RuleCatalog.Resolve(model, @"C:\Apps\steamwebhelper.exe").Scope == "Group: Steam", "Grouped app B resolves shared identity");
 Assert(RuleCatalog.Resolve(model, @"C:\Apps\game.exe").Scope == "Unmanaged", "Unrelated executable not grouped");
+var directions = new SharedRateLimiter();
+var downKey = SharedRateLimiter.DirectionKey("group:steam", true);
+var upKey = SharedRateLimiter.DirectionKey("group:steam", false);
+Assert(downKey != upKey, "Upload and download use different identities");
+Assert(directions.TryConsume(downKey, 1, 1024, 0), "Download bucket initial allowance");
+Assert(directions.TryConsume(upKey, 1, 1024, 0), "Upload bucket unaffected by download");
+Assert(!directions.TryConsume(downKey, 1, 1, 0), "Download budget exhausted independently");
+Assert(directions.TryConsume(downKey, 1, 1024, 1), "Download refills after one second");
+Assert(!directions.TryConsume(downKey, 1, 1, .5), "Backward time does not refill");
 Console.WriteLine("All deterministic core tests passed. No OS network enforcement tested.");
