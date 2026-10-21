@@ -239,6 +239,12 @@ public sealed class MainForm : Form
 
             var snapshots = await Task.Run(() => SnapshotProcesses(query, filterIndex));
             if (IsDisposed) return;
+            if (grid.ContextMenuStrip?.Visible == true)
+            {
+                refreshQueued = true;
+                return;
+            }
+
             var rows = snapshots.Select(p =>
             {
                 var rule = RuleCatalog.Find(settings, p.Path);
@@ -322,11 +328,17 @@ public sealed class MainForm : Form
             Reload();
             return;
         }
-        var rule = RuleCatalog.Find(settings, path) ?? new AppRule { ExecutablePath = path };
-        rule.DownloadLimitKBps = down;
-        rule.UploadLimitKBps = up;
-        if (!settings.Rules.Contains(rule)) settings.Rules.Add(rule);
-        if (!TrySaveSettings()) return;
+        if (!TryPersistMutation(() =>
+        {
+            var rule = RuleCatalog.Find(settings, path) ?? new AppRule { ExecutablePath = path };
+            rule.DownloadLimitKBps = down;
+            rule.UploadLimitKBps = up;
+            if (!settings.Rules.Contains(rule)) settings.Rules.Add(rule);
+        }))
+        {
+            Reload();
+            return;
+        }
         Reload();
     }
 
@@ -358,12 +370,18 @@ public sealed class MainForm : Form
             MessageBox.Show("Enter a positive whole number, or leave blank for unlimited.", "Invalid limit");
             return;
         }
-        rule ??= new AppRule { ExecutablePath = path };
-        rule.DownloadLimitKBps = down;
-        rule.UploadLimitKBps = up;
-        rule.Blocked = blocked.Checked;
-        if (!settings.Rules.Contains(rule)) settings.Rules.Add(rule);
-        if (!TrySaveSettings()) return;
+        if (!TryPersistMutation(() =>
+        {
+            var target = RuleCatalog.Find(settings, path) ?? new AppRule { ExecutablePath = path };
+            target.DownloadLimitKBps = down;
+            target.UploadLimitKBps = up;
+            target.Blocked = blocked.Checked;
+            if (!settings.Rules.Contains(target)) settings.Rules.Add(target);
+        }))
+        {
+            Reload();
+            return;
+        }
         Reload();
     }
 
@@ -427,15 +445,49 @@ public sealed class MainForm : Form
     {
         string path = grid.CurrentRow?.Cells["path"].Value?.ToString() ?? "";
         if (string.IsNullOrWhiteSpace(path)) { MessageBox.Show("Executable path unavailable."); return; }
-        var rule = RuleCatalog.Find(settings, path);
-        if (rule is null)
+        if (!TryPersistMutation(() =>
         {
-            rule = new AppRule { ExecutablePath = path, Blocked = true };
-            settings.Rules.Add(rule);
+            var rule = RuleCatalog.Find(settings, path);
+            if (rule is null)
+                settings.Rules.Add(new AppRule { ExecutablePath = path, Blocked = true });
+            else
+                rule.Blocked = !rule.Blocked;
+        }))
+        {
+            Reload();
+            return;
         }
-        else rule.Blocked = !rule.Blocked;
-        if (!TrySaveSettings()) return;
         Reload();
+    }
+
+    private bool TryPersistMutation(Action mutation)
+    {
+        // Keep the in-memory model identical to disk if persistence is unavailable or fails.
+        if (settingsSaveDisabled)
+        {
+            MessageBox.Show("Settings cannot be saved because the previous settings file could not be safely preserved.", "Saving disabled");
+            return false;
+        }
+
+        string snapshot = System.Text.Json.JsonSerializer.Serialize(settings);
+        mutation();
+        if (TrySaveSettings()) return true;
+
+        try
+        {
+            var restored = System.Text.Json.JsonSerializer.Deserialize<AppSettings>(snapshot);
+            if (restored is not null)
+            {
+                settings.Rules = restored.Rules ?? new();
+                settings.Groups = restored.Groups ?? new();
+                settings.StartWithWindows = restored.StartWithWindows;
+            }
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            // Snapshot is generated from our own in-memory model; this should not occur.
+        }
+        return false;
     }
 
     private bool TrySaveSettings()
