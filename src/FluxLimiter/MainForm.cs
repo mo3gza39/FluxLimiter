@@ -266,6 +266,14 @@ public sealed class MainForm : Form
         action(path);
     }
 
+    internal static string CsvCell(string value)
+    {
+        // Prevent spreadsheet applications from interpreting exported process data as formulas.
+        string safe = value;
+        if (safe.Length > 0 && "=+-@".Contains(safe[0])) safe = "'" + safe;
+        return "\"" + safe.Replace("\"", "\"\"") + "\"";
+    }
+
     private void ExportCsv()
     {
         using var dialog = new SaveFileDialog { Filter = "CSV (*.csv)|*.csv", FileName = "fluxlimiter-processes.csv" };
@@ -273,7 +281,7 @@ public sealed class MainForm : Form
         var csv = new StringBuilder();
         csv.AppendLine("Application,PID,Executable,DownloadLimitKBps,UploadLimitKBps,Blocked");
         foreach (DataGridViewRow row in grid.Rows)
-            csv.AppendLine(string.Join(",", row.Cells.Cast<DataGridViewCell>().Select(c => "\"" + (c.Value?.ToString() ?? "").Replace("\"", "\"\"") + "\"")));
+            csv.AppendLine(string.Join(",", row.Cells.Cast<DataGridViewCell>().Select(c => CsvCell(c.Value?.ToString() ?? ""))));
         try { File.WriteAllText(dialog.FileName, csv.ToString(), new UTF8Encoding(true)); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { MessageBox.Show(ex.Message, "Export failed"); }
     }
