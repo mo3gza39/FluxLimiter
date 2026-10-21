@@ -3,40 +3,88 @@ using System.Net.NetworkInformation;
 
 namespace FluxLimiter;
 
-// Device-level adapter throughput only. Does not attribute traffic to applications.
+// Device-level Internet-facing throughput only. Does not attribute traffic to applications.
+// Samples one active interface with an IPv4 default gateway instead of summing physical
+// and virtual interfaces, which can count the same traffic more than once.
 public sealed class NetworkSampler
 {
-    private readonly Dictionary<string, (long Received, long Sent)> previous = new();
+    private string? selectedAdapterId;
+    private long previousReceived;
+    private long previousSent;
     private long lastTick;
+
     public (double DownloadKBps, double UploadKBps) Sample()
     {
         long now = Stopwatch.GetTimestamp();
         double elapsed = lastTick == 0 ? 0 : (now - lastTick) / (double)Stopwatch.Frequency;
-        double down = 0, up = 0;
-        var live = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var adapter in NetworkInterface.GetAllNetworkInterfaces())
+
+        var adapter = SelectInternetAdapter();
+        if (adapter is null)
         {
-            if (adapter.OperationalStatus != OperationalStatus.Up ||
-                adapter.NetworkInterfaceType == NetworkInterfaceType.Loopback ||
-                adapter.NetworkInterfaceType == NetworkInterfaceType.Tunnel) continue;
-            try
-            {
-                var stats = adapter.GetIPv4Statistics();
-                string id = adapter.Id;
-                live.Add(id);
-                if (elapsed > 0 && previous.TryGetValue(id, out var old))
-                {
-                    long received = stats.BytesReceived - old.Received;
-                    long sent = stats.BytesSent - old.Sent;
-                    if (received >= 0) down += received;
-                    if (sent >= 0) up += sent;
-                }
-                previous[id] = (stats.BytesReceived, stats.BytesSent);
-            }
-            catch (NetworkInformationException) { }
+            Reset(now);
+            return (0, 0);
         }
-        foreach (string id in previous.Keys.Where(k => !live.Contains(k)).ToArray()) previous.Remove(id);
+
+        try
+        {
+            var stats = adapter.GetIPv4Statistics();
+            if (!string.Equals(selectedAdapterId, adapter.Id, StringComparison.OrdinalIgnoreCase) || elapsed <= 0)
+            {
+                selectedAdapterId = adapter.Id;
+                previousReceived = stats.BytesReceived;
+                previousSent = stats.BytesSent;
+                lastTick = now;
+                return (0, 0);
+            }
+
+            long received = stats.BytesReceived - previousReceived;
+            long sent = stats.BytesSent - previousSent;
+            previousReceived = stats.BytesReceived;
+            previousSent = stats.BytesSent;
+            lastTick = now;
+
+            if (received < 0 || sent < 0) return (0, 0); // interface reset/reconnect
+            return (received / elapsed / 1024.0, sent / elapsed / 1024.0);
+        }
+        catch (NetworkInformationException)
+        {
+            Reset(now);
+            return (0, 0);
+        }
+    }
+
+    private static NetworkInterface? SelectInternetAdapter()
+    {
+        return NetworkInterface.GetAllNetworkInterfaces()
+            .Where(a => a.OperationalStatus == OperationalStatus.Up &&
+                        a.NetworkInterfaceType != NetworkInterfaceType.Loopback &&
+                        a.NetworkInterfaceType != NetworkInterfaceType.Tunnel)
+            .Select(a =>
+            {
+                try
+                {
+                    var p = a.GetIPProperties();
+                    bool hasIpv4Gateway = p.GatewayAddresses.Any(g =>
+                        g.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork &&
+                        !g.Address.Equals(System.Net.IPAddress.Any));
+                    return (Adapter: a, HasGateway: hasIpv4Gateway);
+                }
+                catch (NetworkInformationException)
+                {
+                    return (Adapter: a, HasGateway: false);
+                }
+            })
+            .Where(x => x.HasGateway)
+            .OrderByDescending(x => x.Adapter.Speed)
+            .Select(x => x.Adapter)
+            .FirstOrDefault();
+    }
+
+    private void Reset(long now)
+    {
+        selectedAdapterId = null;
+        previousReceived = 0;
+        previousSent = 0;
         lastTick = now;
-        return elapsed > 0 ? (down / elapsed / 1024.0, up / elapsed / 1024.0) : (0, 0);
     }
 }
