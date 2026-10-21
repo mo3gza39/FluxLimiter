@@ -8,9 +8,11 @@ public static class SettingsStore
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FluxLimiter");
     private static readonly string FilePath = Path.Combine(Folder, "settings.json");
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    public static string? LastLoadWarning { get; private set; }
 
     public static AppSettings Load()
     {
+        LastLoadWarning = null;
         try
         {
             if (!File.Exists(FilePath)) return new();
@@ -31,7 +33,22 @@ public static class SettingsStore
         }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
-            // Preserve the original file for manual recovery.
+            // Never leave a corrupt primary file in place where a later Save could replace it.
+            try
+            {
+                if (File.Exists(FilePath))
+                {
+                    string corrupt = FilePath + ".corrupt-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture);
+                    File.Move(FilePath, corrupt, overwrite: false);
+                    LastLoadWarning = "Settings could not be loaded. The original file was preserved as " + Path.GetFileName(corrupt) + ".";
+                }
+                else LastLoadWarning = "Settings could not be loaded: " + ex.Message;
+            }
+            catch (Exception preserveEx) when (preserveEx is IOException or UnauthorizedAccessException)
+            {
+                // Refuse silent destructive recovery if the original cannot be preserved.
+                LastLoadWarning = "Settings could not be loaded or preserved. Saving is disabled for this session.";
+            }
             return new();
         }
     }
