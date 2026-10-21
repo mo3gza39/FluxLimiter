@@ -42,4 +42,13 @@ Assert(directions.TryConsume(upKey, 1, 1024, 0), "Upload bucket unaffected by do
 Assert(!directions.TryConsume(downKey, 1, 1, 0), "Download budget exhausted independently");
 Assert(directions.TryConsume(downKey, 1, 1024, 1), "Download refills after one second");
 Assert(!directions.TryConsume(downKey, 1, 1, .5), "Backward time does not refill");
+
+var pacer = new TrafficPacer();
+Assert(Math.Abs(pacer.Schedule("browser", true, 1, 2048, 0) - 1) < 0.000001, "Oversized 2 KB request is paced, not permanently denied");
+Assert(Math.Abs(pacer.Schedule("browser", true, 1, 1024, 0) - 2) < 0.000001, "Same-direction queued work is serialized");
+Assert(Math.Abs(pacer.Schedule("browser", false, 1, 1024, 0)) < 0.000001, "Upload queue is independent");
+Assert(Math.Abs(pacer.Schedule("other", true, 1, 1024, 0)) < 0.000001, "Other process queue is independent");
+pacer.Clear("browser");
+Assert(Math.Abs(pacer.Schedule("browser", true, 1, 1024, 0)) < 0.000001, "Clear resets directional budget");
+
 Console.WriteLine("All deterministic core tests passed. No OS network enforcement tested.");
