@@ -182,12 +182,12 @@ public sealed class MainForm : Form
         var menu = new ContextMenuStrip();
         menu.Items.Add("Open File Location", null, (_, _) => WithSelectedPath(path =>
         {
-            try { Process.Start(new ProcessStartInfo("explorer.exe", "/select,\\"" + path + "\\"") { UseShellExecute = true }); }
+            try { Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + path + "\"") { UseShellExecute = true }); }
             catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { MessageBox.Show(ex.Message); }
         }));
         menu.Items.Add("Properties", null, (_, _) => WithSelectedPath(path =>
         {
-            try { Process.Start(new ProcessStartInfo("rundll32.exe", "shell32.dll,ShellExec_RunDLL properties \\"" + path + "\\"") { UseShellExecute = true }); }
+            try { Process.Start(new ProcessStartInfo("rundll32.exe", "shell32.dll,ShellExec_RunDLL properties \"" + path + "\"") { UseShellExecute = true }); }
             catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { MessageBox.Show(ex.Message); }
         }));
         menu.Items.Add("Set Speed Limit (saved only)", null, (_, _) => { if (grid.CurrentRow is not null) EditRule(grid.CurrentRow.Index); });
