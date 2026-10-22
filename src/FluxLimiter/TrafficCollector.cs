@@ -34,7 +34,7 @@ public sealed class TrafficCollector : IDisposable
             local.Source.Dynamic.All += OnEvent;
             local.Source.Process();
         }
-        catch (Exception ex) when (ex is UnauthorizedAccessException or InvalidOperationException or TraceEventException)
+        catch (Exception ex) when (ex is UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
             // UI shows an em dash when ETW is unavailable.
         }
