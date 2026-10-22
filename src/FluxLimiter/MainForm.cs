@@ -107,6 +107,7 @@ public sealed class MainForm : Form
         grid.DefaultCellStyle.ForeColor = ink;
         grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(38, 99, 100);
         grid.DefaultCellStyle.SelectionForeColor = Color.White;
+        grid.Columns.Add(new DataGridViewImageColumn { Name = "icon", HeaderText = "", Width = 34, ImageLayout = DataGridViewImageCellLayout.Zoom, ReadOnly = true });
         grid.Columns.Add("app", "Application");
         grid.Columns.Add("status", "Status");
         grid.Columns.Add("download", "Download ↓");
@@ -155,7 +156,7 @@ public sealed class MainForm : Form
         string[] nav = { "Dashboard", "Applications", "Rules", "Monthly Usage", "Statistics", "Settings", "About" };
         for (int i = 0; i < nav.Length; i++)
         {
-            var n = new Button { Text = NavGlyph(nav[i]) + "   " + nav[i], Left = 16, Top = 112 + (i * 50), Width = 186, Height = 40, FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(16, 0, 0, 0), BackColor = i == 0 ? Color.FromArgb(27, 37, 52) : sidebar.BackColor, ForeColor = i == 0 ? ink : Color.FromArgb(145, 159, 177) };
+            var n = new Button { Text = nav[i], Image = UiIcon(nav[i]), ImageAlign = ContentAlignment.MiddleLeft, TextImageRelation = TextImageRelation.ImageBeforeText, Left = 16, Top = 112 + (i * 50), Width = 186, Height = 40, FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(16, 0, 0, 0), BackColor = i == 0 ? Color.FromArgb(27, 37, 52) : sidebar.BackColor, ForeColor = i == 0 ? ink : Color.FromArgb(145, 159, 177) };
             n.FlatAppearance.BorderSize = 0;
             sidebar.Controls.Add(n);
         }
@@ -216,17 +217,36 @@ public sealed class MainForm : Form
         _ = ReloadAsync();
     }
 
-    private static string NavGlyph(string item) => item switch
+    private static Image UiIcon(string item)
     {
-        "Dashboard" => "◈",
-        "Applications" => "▦",
-        "Rules" => "⚙",
-        "Monthly Usage" => "▤",
-        "Statistics" => "⌁",
-        "Settings" => "⚙",
-        "About" => "ⓘ",
-        _ => "•"
-    };
+        var bitmap = new Bitmap(18, 18);
+        using var g = Graphics.FromImage(bitmap);
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        using var pen = new Pen(Color.FromArgb(145, 159, 177), 1.7f);
+        using var brush = new SolidBrush(Color.FromArgb(145, 159, 177));
+        var r = new RectangleF(2.5f, 2.5f, 13f, 13f);
+        switch (item)
+        {
+            case "Dashboard":
+                g.DrawRectangle(pen, 3, 3, 5, 5); g.DrawRectangle(pen, 10, 3, 5, 5);
+                g.DrawRectangle(pen, 3, 10, 5, 5); g.DrawRectangle(pen, 10, 10, 5, 5); break;
+            case "Applications":
+                g.DrawRectangle(pen, r.X, r.Y, r.Width, r.Height);
+                g.DrawLine(pen, 3, 7, 15, 7); g.DrawLine(pen, 3, 11, 15, 11); break;
+            case "Rules":
+            case "Settings":
+                g.DrawEllipse(pen, 4, 4, 10, 10); g.FillEllipse(brush, 7, 7, 4, 4); break;
+            case "Monthly Usage":
+            case "Statistics":
+                g.DrawLine(pen, 3, 14, 3, 9); g.DrawLine(pen, 8, 14, 8, 5);
+                g.DrawLine(pen, 13, 14, 13, 2); break;
+            case "About":
+                g.DrawEllipse(pen, r); g.DrawLine(pen, 9, 8, 9, 13); g.FillEllipse(brush, 8, 4.5f, 2, 2); break;
+            default:
+                g.FillEllipse(brush, 6, 6, 6, 6); break;
+        }
+        return bitmap;
+    }
 
     private Panel DashboardCard(string heading, Label value, string note)
     {
@@ -294,7 +314,7 @@ public sealed class MainForm : Form
             var rows = snapshots.Select(p =>
             {
                 var rule = RuleCatalog.Find(settings, p.Path);
-                return new object[] { p.Name, rule?.Blocked == true ? "Blocked" : "Active", "—", "—", "—",
+                return new object[] { ExecutableIcon(p.Path), p.Name, rule?.Blocked == true ? "Blocked" : "Active", "—", "—", "—",
                     rule?.DownloadLimitKBps?.ToString(CultureInfo.InvariantCulture) ?? "Unlimited",
                     rule?.UploadLimitKBps?.ToString(CultureInfo.InvariantCulture) ?? "Unlimited",
                     rule is null ? "None" : "Custom", "•••", p.Pid, p.Path };
@@ -308,15 +328,15 @@ public sealed class MainForm : Form
                 for (int i = 0; i < rows.Count; i++)
                 {
                     int row = grid.Rows.Add(rows[i]);
-                    if (selectedPid.HasValue && Equals(rows[i][9], selectedPid.Value) &&
-                        string.Equals(rows[i][10]?.ToString(), selectedPath, StringComparison.OrdinalIgnoreCase))
+                    if (selectedPid.HasValue && Equals(rows[i][10], selectedPid.Value) &&
+                        string.Equals(rows[i][11]?.ToString(), selectedPath, StringComparison.OrdinalIgnoreCase))
                         selectedIndex = row;
                 }
                 grid.ClearSelection();
                 if (selectedIndex >= 0)
                 {
                     grid.Rows[selectedIndex].Selected = true;
-                    grid.CurrentCell = grid.Rows[selectedIndex].Cells[0];
+                    grid.CurrentCell = grid.Rows[selectedIndex].Cells["app"];
                 }
                 if (firstVisible >= 0 && firstVisible < grid.Rows.Count)
                     grid.FirstDisplayedScrollingRowIndex = firstVisible;
@@ -334,6 +354,20 @@ public sealed class MainForm : Form
                 refreshQueued = false;
                 BeginInvoke((Action)QueueReload);
             }
+        }
+    }
+
+    private static Image? ExecutableIcon(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
+        try
+        {
+            using var icon = Icon.ExtractAssociatedIcon(path);
+            return icon?.ToBitmap();
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException)
+        {
+            return null;
         }
     }
 
@@ -453,7 +487,7 @@ public sealed class MainForm : Form
     private void SetupContextMenu()
     {
         var menu = new ContextMenuStrip { BackColor = panel, ForeColor = ink, ShowImageMargin = false };
-        menu.Items.Add("Open File Location", null, (_, _) => WithSelectedPath(path =>
+        menu.Items.Add("Open file location", null, (_, _) => WithSelectedPath(path =>
         {
             try
             {
@@ -463,28 +497,22 @@ public sealed class MainForm : Form
             }
             catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { MessageBox.Show(ex.Message); }
         }));
-        menu.Items.Add("Properties", null, (_, _) => WithSelectedPath(path =>
+        menu.Items.Add("Open process folder", null, (_, _) => WithSelectedPath(path =>
         {
-            try
-            {
-                var psi = new ProcessStartInfo("rundll32.exe") { UseShellExecute = true };
-                psi.ArgumentList.Add("shell32.dll,ShellExec_RunDLL");
-                psi.ArgumentList.Add("properties");
-                psi.ArgumentList.Add(path);
-                Process.Start(psi);
-            }
+            try { Process.Start(new ProcessStartInfo(Path.GetDirectoryName(path) ?? path) { UseShellExecute = true }); }
             catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { MessageBox.Show(ex.Message); }
         }));
+        menu.Items.Add("Copy process path", null, (_, _) => WithSelectedPath(path => Clipboard.SetText(path)));
+        menu.Items.Add("Open in Task Manager", null, (_, _) =>
+        {
+            try { Process.Start(new ProcessStartInfo("taskmgr.exe") { UseShellExecute = true }); }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { MessageBox.Show(ex.Message); }
+        }));
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Set speed limit", null, (_, _) => { if (grid.CurrentRow is not null) EditRule(grid.CurrentRow.Index); });
         menu.Items.Add("Toggle block rule", null, (_, _) => ToggleBlockSelected());
-        menu.Items.Add("Usage statistics", null, (_, _) => MessageBox.Show("Per-app traffic attribution is not implemented yet."));
-        menu.Items.Add("Copy File Path", null, (_, _) => WithSelectedPath(path => Clipboard.SetText(path)));
-        menu.Items.Add("View Process Details", null, (_, _) =>
-        {
-            if (grid.CurrentRow is null) return;
-            MessageBox.Show("PID: " + grid.CurrentRow.Cells["pid"].Value + Environment.NewLine +
-                "Executable: " + grid.CurrentRow.Cells["path"].Value, "Process details");
-        });
+        menu.Items.Add("Exclude from list", null, (_, _) => MessageBox.Show("Exclusion persistence is not implemented yet."));
+
         grid.ContextMenuStrip = menu;
         menu.Closed += (_, _) =>
         {
@@ -500,7 +528,7 @@ public sealed class MainForm : Form
             {
                 grid.ClearSelection();
                 grid.Rows[e.RowIndex].Selected = true;
-                grid.CurrentCell = grid.Rows[e.RowIndex].Cells[0];
+                grid.CurrentCell = grid.Rows[e.RowIndex].Cells["app"];
             }
         };
     }
