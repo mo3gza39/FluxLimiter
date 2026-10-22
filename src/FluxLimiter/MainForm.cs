@@ -170,8 +170,8 @@ public sealed class MainForm : Form
         var middle = new TableLayoutPanel { Dock = DockStyle.Top, Height = 176, ColumnCount = 2, RowCount = 1, BackColor = bg, Margin = new Padding(0, 16, 0, 16) };
         middle.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         middle.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        var topApps = DashboardPlaceholder("Top Applications", "Today", "Per-application traffic attribution is not connected yet.", 0, 0, 0, 160);
-        var sevenDays = DashboardPlaceholder("Daily Usage", "Last 7 days", "Usage history will appear here after the collector is implemented.", 0, 0, 0, 160);
+        var topApps = DashboardPlaceholder("Top Applications", "Today", "Per-application traffic attribution is not connected yet.");
+        var sevenDays = DashboardPlaceholder("Daily Usage", "Last 7 days", "Usage history will appear here after the collector is implemented.");
         topApps.Dock = DockStyle.Fill; topApps.Margin = new Padding(0, 0, 8, 0);
         sevenDays.Dock = DockStyle.Fill; sevenDays.Margin = new Padding(8, 0, 0, 0);
         middle.Controls.Add(topApps, 0, 0); middle.Controls.Add(sevenDays, 1, 0);
