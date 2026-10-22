@@ -28,6 +28,9 @@ public sealed class MainForm : Form
     private readonly Label ruleCount = new();
     private readonly Label dailyUsage = new();
     private readonly Label monthlyUsage = new();
+    private readonly Dictionary<string, Button> navButtons = new(StringComparer.OrdinalIgnoreCase);
+    private Panel? dashboardPage;
+    private Panel? pageHost;
     private readonly Color bg = Color.FromArgb(16, 22, 34);
     private readonly Color panel = Color.FromArgb(25, 34, 49);
     private readonly Color ink = Color.FromArgb(229, 237, 246);
@@ -44,16 +47,15 @@ public sealed class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleMode = AutoScaleMode.Dpi;
 
-        var top = new Panel { Dock = DockStyle.Top, Height = 176, BackColor = panel, Padding = new Padding(28, 18, 28, 14) };
-        var headerLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = panel };
-        headerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 55));
-        headerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 45));
+        var top = new Panel { Dock = DockStyle.Top, Height = 88, BackColor = bg, Padding = new Padding(0, 6, 0, 6) };
+        var headerLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 1, BackColor = bg };
+        headerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        var headingRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, BackColor = panel };
+        var headingRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, BackColor = bg };
         headingRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         headingRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
         headingRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
-        var headingText = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = panel };
+        var headingText = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = bg };
         var title = new Label { Text = "FluxLimiter", Font = new Font("Segoe UI Semibold", 26), ForeColor = Color.FromArgb(91, 225, 184), AutoSize = true, Margin = new Padding(0) };
         var subtitle = new Label { Text = "Network control dashboard", AutoSize = true, ForeColor = Color.FromArgb(155, 171, 190), Margin = new Padding(2, 4, 0, 0) };
         headingText.Controls.Add(title); headingText.Controls.Add(subtitle);
@@ -77,7 +79,7 @@ public sealed class MainForm : Form
         var export = Button("Export CSV", 0, 0, 0, (_, _) => ExportCsv()); export.Dock = DockStyle.Fill; export.Margin = new Padding(0, 8, 12, 8);
         var reload = Button("Refresh", 0, 0, 0, (_, _) => Reload()); reload.Dock = DockStyle.Fill; reload.Margin = new Padding(0, 8, 0, 8);
         toolbar.Controls.Add(search, 0, 0); toolbar.Controls.Add(filter, 1, 0); toolbar.Controls.Add(export, 2, 0); toolbar.Controls.Add(reload, 3, 0);
-        headerLayout.Controls.Add(headingRow, 0, 0); headerLayout.Controls.Add(toolbar, 0, 1);
+        headerLayout.Controls.Add(headingRow, 0, 0);
         top.Controls.Add(headerLayout);
 
         grid.Dock = DockStyle.Fill;
@@ -159,10 +161,14 @@ public sealed class MainForm : Form
         {
             var n = new Button { Text = nav[i], Image = UiIcon(nav[i]), ImageAlign = ContentAlignment.MiddleLeft, TextImageRelation = TextImageRelation.ImageBeforeText, Left = 16, Top = 112 + (i * 50), Width = 186, Height = 40, FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(16, 0, 0, 0), BackColor = i == 0 ? Color.FromArgb(27, 37, 52) : sidebar.BackColor, ForeColor = i == 0 ? ink : Color.FromArgb(145, 159, 177) };
             n.FlatAppearance.BorderSize = 0;
+            string pageName = nav[i];
+            n.Click += (_, _) => NavigateTo(pageName);
+            navButtons[pageName] = n;
             sidebar.Controls.Add(n);
         }
 
-        var dashboard = new Panel { Dock = DockStyle.Fill, BackColor = bg, AutoScroll = true, Padding = new Padding(28, 20, 28, 20) };
+        var dashboard = new Panel { Dock = DockStyle.Fill, BackColor = bg, AutoScroll = true, Padding = new Padding(22, 16, 22, 18) };
+        dashboardPage = dashboard;
         top.Dock = DockStyle.Fill; top.Margin = new Padding(0, 0, 0, 16);
         title.Text = "Dashboard"; title.ForeColor = ink;
         subtitle.Text = "Monitor and control application network activity";
@@ -186,22 +192,29 @@ public sealed class MainForm : Form
         middle.Controls.Add(topApps, 0, 0); middle.Controls.Add(sevenDays, 1, 0);
 
         var active = new Panel { Dock = DockStyle.Fill, BackColor = panel, Margin = new Padding(0, 16, 0, 0), Padding = new Padding(20, 54, 20, 18) };
-        active.Controls.Add(new Label { Text = "●  Active Applications", Left = 20, Top = 14, Width = 260, Height = 32, Font = new Font("Segoe UI Semibold", 15), ForeColor = ink });
+        active.Controls.Add(new Label { Text = "Active Applications", Left = 20, Top = 14, Width = 260, Height = 32, Font = new Font("Segoe UI Semibold", 15), ForeColor = ink });
+        toolbar.Dock = DockStyle.Top;
+        toolbar.Height = 48;
+        toolbar.Padding = new Padding(640, 4, 0, 4);
+        active.Controls.Add(toolbar);
         grid.Dock = DockStyle.Fill;
         active.Controls.Add(grid);
+        grid.BringToFront();
 
         bottom.Visible = false;
         var content = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, BackColor = bg };
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 182));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 192));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 116));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 244));
         content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         content.Controls.Add(top, 0, 0);
         content.Controls.Add(summary, 0, 1);
         content.Controls.Add(middle, 0, 2);
         content.Controls.Add(active, 0, 3);
         dashboard.Controls.Add(content);
-        shell.Controls.Add(dashboard);
+        pageHost = new Panel { Dock = DockStyle.Fill, BackColor = bg };
+        pageHost.Controls.Add(dashboard);
+        shell.Controls.Add(pageHost);
         shell.Controls.Add(sidebar);
         Controls.Add(shell);
         searchDebounce.Tick += (_, _) => { searchDebounce.Stop(); QueueReload(); };
@@ -219,6 +232,83 @@ public sealed class MainForm : Form
             TrySynchronizeFirewall(showSuccess: false);
         };
         _ = ReloadAsync();
+    }
+
+    private void NavigateTo(string pageName)
+    {
+        if (pageHost is null || dashboardPage is null) return;
+
+        foreach (var pair in navButtons)
+        {
+            bool selected = string.Equals(pair.Key, pageName, StringComparison.OrdinalIgnoreCase);
+            pair.Value.BackColor = selected ? Color.FromArgb(12, 78, 145) : Color.FromArgb(13, 20, 30);
+            pair.Value.ForeColor = selected ? Color.White : Color.FromArgb(190, 204, 220);
+        }
+
+        pageHost.SuspendLayout();
+        try
+        {
+            pageHost.Controls.Clear();
+            if (pageName == "Dashboard")
+            {
+                pageHost.Controls.Add(dashboardPage);
+                dashboardPage.Dock = DockStyle.Fill;
+                return;
+            }
+
+            var page = BuildNavigationPage(pageName);
+            pageHost.Controls.Add(page);
+            page.Dock = DockStyle.Fill;
+        }
+        finally { pageHost.ResumeLayout(); }
+    }
+
+    private Control BuildNavigationPage(string pageName)
+    {
+        var page = new Panel { BackColor = bg, Padding = new Padding(28) };
+        var titleLabel = new Label
+        {
+            Text = pageName,
+            Dock = DockStyle.Top,
+            Height = 52,
+            Font = new Font("Segoe UI Semibold", 24),
+            ForeColor = ink
+        };
+        page.Controls.Add(titleLabel);
+
+        string description = pageName switch
+        {
+            "Applications" => "Application network controls are available from Active Applications on the Dashboard.",
+            "Rules" => $"Saved application rules: {settings.Rules.Count}. Open an application rule from the Dashboard to edit limits or blocking.",
+            "Monthly Usage" => "Monthly accounting will appear here when the per-application usage collector is connected.",
+            "Statistics" => "Traffic statistics will appear here when per-application accounting is connected.",
+            "Settings" => "FluxLimiter settings are persisted locally. Enforcement changes are synchronized with Windows Firewall.",
+            "About" => "FluxLimiter\nWindows network control and bandwidth management.",
+            _ => ""
+        };
+
+        var card = new Panel { Dock = DockStyle.Top, Height = 150, BackColor = panel, Padding = new Padding(22), Margin = new Padding(0, 18, 0, 0) };
+        card.Controls.Add(new Label
+        {
+            Text = description,
+            Dock = DockStyle.Fill,
+            Font = new Font("Segoe UI", 11),
+            ForeColor = Color.FromArgb(185, 200, 218),
+            TextAlign = ContentAlignment.MiddleLeft
+        });
+        page.Controls.Add(card);
+        card.BringToFront();
+
+        if (pageName == "Applications")
+        {
+            var openDashboard = Button("Open Active Applications", 0, 0, 220, (_, _) => NavigateTo("Dashboard"));
+            openDashboard.Dock = DockStyle.Top;
+            openDashboard.Height = 42;
+            openDashboard.Margin = new Padding(0, 12, 0, 0);
+            page.Controls.Add(openDashboard);
+            openDashboard.BringToFront();
+        }
+        return page;
     }
 
     private static Image UiIcon(string item)
