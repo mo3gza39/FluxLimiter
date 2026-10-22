@@ -86,10 +86,14 @@ public sealed class MainForm : Form
         grid.RowHeadersVisible = false;
         grid.AllowUserToAddRows = false;
         grid.AllowUserToDeleteRows = false;
+        grid.AllowUserToResizeRows = false;
+        grid.AllowUserToOrderColumns = false;
+        grid.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.None;
+        grid.ScrollBars = ScrollBars.Vertical;
         grid.ReadOnly = false;
         grid.MultiSelect = false;
         grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-        grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+        grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
         grid.RowTemplate.Height = 34;
         grid.ColumnHeadersHeight = 38;
         grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
@@ -116,15 +120,17 @@ public sealed class MainForm : Form
         grid.Columns.Add("path", "Executable");
         grid.Columns["pid"].Visible = false;
         grid.Columns["path"].Visible = false;
-        grid.Columns["app"].FillWeight = 120;
-        grid.Columns["status"].FillWeight = 60;
-        grid.Columns["download"].FillWeight = 78;
-        grid.Columns["upload"].FillWeight = 72;
-        grid.Columns["total"].FillWeight = 65;
-        grid.Columns["down"].FillWeight = 90;
-        grid.Columns["up"].FillWeight = 86;
-        grid.Columns["rule"].FillWeight = 58;
-        grid.Columns["action"].FillWeight = 45;
+        grid.Columns["app"].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+        grid.Columns["app"].MinimumWidth = 190;
+        grid.Columns["status"].Width = 76;
+        grid.Columns["download"].Width = 100;
+        grid.Columns["upload"].Width = 92;
+        grid.Columns["total"].Width = 86;
+        grid.Columns["down"].Width = 118;
+        grid.Columns["up"].Width = 108;
+        grid.Columns["rule"].Width = 82;
+        grid.Columns["action"].Width = 78;
+        grid.Columns["action"].Frozen = true;
         foreach (DataGridViewColumn column in grid.Columns) column.ReadOnly = true;
         grid.Columns["down"].ReadOnly = false;
         grid.Columns["up"].ReadOnly = false;
@@ -149,7 +155,7 @@ public sealed class MainForm : Form
         string[] nav = { "Dashboard", "Applications", "Rules", "Monthly Usage", "Statistics", "Settings", "About" };
         for (int i = 0; i < nav.Length; i++)
         {
-            var n = new Button { Text = nav[i], Left = 16, Top = 112 + (i * 50), Width = 186, Height = 40, FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(16, 0, 0, 0), BackColor = i == 0 ? Color.FromArgb(27, 37, 52) : sidebar.BackColor, ForeColor = i == 0 ? ink : Color.FromArgb(145, 159, 177) };
+            var n = new Button { Text = NavGlyph(nav[i]) + "   " + nav[i], Left = 16, Top = 112 + (i * 50), Width = 186, Height = 40, FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(16, 0, 0, 0), BackColor = i == 0 ? Color.FromArgb(27, 37, 52) : sidebar.BackColor, ForeColor = i == 0 ? ink : Color.FromArgb(145, 159, 177) };
             n.FlatAppearance.BorderSize = 0;
             sidebar.Controls.Add(n);
         }
@@ -177,8 +183,8 @@ public sealed class MainForm : Form
         middle.Controls.Add(topApps, 0, 0); middle.Controls.Add(sevenDays, 1, 0);
 
         var active = new Panel { Dock = DockStyle.Fill, BackColor = panel, Margin = new Padding(0, 16, 0, 0) };
-        active.Controls.Add(new Label { Text = "Active Applications", Left = 20, Top = 14, Width = 260, Height = 32, Font = new Font("Segoe UI Semibold", 15), ForeColor = ink });
-        grid.Dock = DockStyle.None; grid.SetBounds(20, 54, 1120, 252); grid.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+        active.Controls.Add(new Label { Text = "●  Active Applications", Left = 20, Top = 14, Width = 260, Height = 32, Font = new Font("Segoe UI Semibold", 15), ForeColor = ink });
+        grid.Dock = DockStyle.Fill; grid.Margin = new Padding(20, 54, 20, 18); grid.Padding = new Padding(0);
         active.Controls.Add(grid);
 
         bottom.Visible = false;
@@ -209,6 +215,18 @@ public sealed class MainForm : Form
         TrySynchronizeFirewall(showSuccess: false);
         _ = ReloadAsync();
     }
+
+    private static string NavGlyph(string item) => item switch
+    {
+        "Dashboard" => "◈",
+        "Applications" => "▦",
+        "Rules" => "⚙",
+        "Monthly Usage" => "▤",
+        "Statistics" => "⌁",
+        "Settings" => "⚙",
+        "About" => "ⓘ",
+        _ => "•"
+    };
 
     private Panel DashboardCard(string heading, Label value, string note)
     {
