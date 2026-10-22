@@ -605,7 +605,9 @@ public sealed class MainForm : Form
             FirewallEnforcer.Synchronize(settings);
             if (showSuccess) MessageBox.Show("Windows Firewall block rules synchronized.", "FluxLimiter");
         }
-        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException or InvalidOperationException or PlatformNotSupportedException)
+        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException or InvalidOperationException
+            or PlatformNotSupportedException or ArgumentException or InvalidCastException
+            or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException)
         {
             MessageBox.Show(
                 "The rule was saved, but Windows Firewall enforcement could not be synchronized.\n\n" + ex.Message,
