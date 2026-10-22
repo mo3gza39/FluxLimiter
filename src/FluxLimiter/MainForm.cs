@@ -205,6 +205,7 @@ public sealed class MainForm : Form
             settingsSaveDisabled = SettingsStore.LastLoadWarning.Contains("Saving is disabled", StringComparison.OrdinalIgnoreCase);
             MessageBox.Show(SettingsStore.LastLoadWarning, "FluxLimiter settings recovery");
         }
+        TrySynchronizeFirewall(showSuccess: false);
         _ = ReloadAsync();
     }
 
@@ -394,7 +395,7 @@ public sealed class MainForm : Form
         formLayout.Controls.Add(new Label { Text = "Upload KB/s", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
         formLayout.Controls.Add(ul, 1, 1);
         formLayout.Controls.Add(blocked, 1, 2);
-        var note = new Label { Text = "Blank = unlimited. Rules saved but not enforced in this preview.", Dock = DockStyle.Fill, AutoSize = false, TextAlign = ContentAlignment.MiddleLeft };
+        var note = new Label { Text = "Blank = unlimited. Block rules are enforced by Windows Firewall; speed limits await the WFP driver.", Dock = DockStyle.Fill, AutoSize = false, TextAlign = ContentAlignment.MiddleLeft };
         formLayout.SetColumnSpan(note, 2); formLayout.Controls.Add(note, 0, 3);
         var save = new Button { Text = "Save rule", DialogResult = DialogResult.OK, BackColor = Color.FromArgb(45, 74, 91), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Dock = DockStyle.Right, Width = 120, Margin = new Padding(6) };
         formLayout.Controls.Add(save, 1, 4);
@@ -515,7 +516,11 @@ public sealed class MainForm : Form
 
         string snapshot = System.Text.Json.JsonSerializer.Serialize(settings);
         mutation();
-        if (TrySaveSettings()) return true;
+        if (TrySaveSettings())
+        {
+            TrySynchronizeFirewall(showSuccess: false);
+            return true;
+        }
 
         try
         {
@@ -532,6 +537,21 @@ public sealed class MainForm : Form
             // Snapshot is generated from our own in-memory model; this should not occur.
         }
         return false;
+    }
+
+    private void TrySynchronizeFirewall(bool showSuccess)
+    {
+        try
+        {
+            FirewallEnforcer.Synchronize(settings);
+            if (showSuccess) MessageBox.Show("Windows Firewall block rules synchronized.", "FluxLimiter");
+        }
+        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException or InvalidOperationException or PlatformNotSupportedException)
+        {
+            MessageBox.Show(
+                "The rule was saved, but Windows Firewall enforcement could not be synchronized.\n\n" + ex.Message,
+                "FluxLimiter enforcement");
+        }
     }
 
     private bool TrySaveSettings()
