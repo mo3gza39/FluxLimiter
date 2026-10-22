@@ -116,8 +116,8 @@ public sealed class MainForm : Form
         grid.Columns.Add("download", "Download ↓");
         grid.Columns.Add("upload", "Upload ↑");
         grid.Columns.Add("total", "Total");
-        grid.Columns.Add("down", "Limit Download");
-        grid.Columns.Add("up", "Limit Upload");
+        grid.Columns.Add("down", "Limit ↓ (saved)");
+        grid.Columns.Add("up", "Limit ↑ (saved)");
         grid.Columns.Add("rule", "Rule");
         grid.Columns.Add("action", "Action");
         grid.Columns.Add("pid", "PID");
@@ -130,8 +130,10 @@ public sealed class MainForm : Form
         grid.Columns["download"].Width = 100;
         grid.Columns["upload"].Width = 92;
         grid.Columns["total"].Width = 86;
-        grid.Columns["down"].Width = 118;
-        grid.Columns["up"].Width = 108;
+        grid.Columns["down"].Width = 132;
+        grid.Columns["up"].Width = 132;
+        grid.Columns["down"].DefaultCellStyle.ForeColor = Color.FromArgb(160, 174, 190);
+        grid.Columns["up"].DefaultCellStyle.ForeColor = Color.FromArgb(160, 174, 190);
         grid.Columns["rule"].Width = 82;
         grid.Columns["action"].Width = 78;
         foreach (DataGridViewColumn column in grid.Columns) column.ReadOnly = true;
@@ -172,7 +174,7 @@ public sealed class MainForm : Form
         top.Dock = DockStyle.Fill; top.Margin = new Padding(0, 0, 0, 16);
         title.Text = "Dashboard"; title.ForeColor = ink;
         subtitle.Text = "Monitor and control application network activity";
-        processCount.Text = "Processes"; ruleCount.Text = "Saved rules";
+        processCount.Text = "Applications"; ruleCount.Text = "Saved rules";
         dailyUsage.Text = "—"; monthlyUsage.Text = "—";
 
         var summary = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 1, BackColor = bg, Margin = new Padding(0), Padding = new Padding(0) };
@@ -182,14 +184,7 @@ public sealed class MainForm : Form
         summary.Controls.Add(DashboardCard("DAILY USAGE", dailyUsage, "Collector not connected"), 2, 0);
         summary.Controls.Add(DashboardCard("MONTHLY USAGE", monthlyUsage, "Collector not connected"), 3, 0);
 
-        var middle = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = bg, Margin = new Padding(0) };
-        middle.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        middle.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        var topApps = DashboardPlaceholder("Top Applications", "Today", "Per-application traffic attribution is not connected yet.");
-        var sevenDays = DashboardPlaceholder("Daily Usage", "Last 7 days", "Usage history will appear here after the collector is implemented.");
-        topApps.Dock = DockStyle.Fill; topApps.Margin = new Padding(0, 0, 8, 0);
-        sevenDays.Dock = DockStyle.Fill; sevenDays.Margin = new Padding(8, 0, 0, 0);
-        middle.Controls.Add(topApps, 0, 0); middle.Controls.Add(sevenDays, 1, 0);
+        // "Top Applications" / "Daily Usage" panels are hidden until the usage collector exists (see DashboardPlaceholder).
 
         var active = new Panel { Dock = DockStyle.Fill, BackColor = panel, Margin = new Padding(0, 16, 0, 0), Padding = new Padding(20, 8, 20, 18) };
         var activeHeader = new TableLayoutPanel { Dock = DockStyle.Top, Height = 48, ColumnCount = 2, RowCount = 1, BackColor = panel, Padding = new Padding(0) };
@@ -202,21 +197,26 @@ public sealed class MainForm : Form
         toolbar.Padding = new Padding(0);
         activeHeader.Controls.Add(new Label { Text = "Active Applications", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Segoe UI Semibold", 15), ForeColor = ink }, 0, 0);
         activeHeader.Controls.Add(toolbar, 1, 0);
+        var limitsNote = new Label
+        {
+            Text = "Speed limits are saved but not enforced yet   ·   Block uses Windows Firewall   ·   Right-click an app for options",
+            Dock = DockStyle.Top, Height = 30, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft,
+            Font = new Font("Segoe UI", 9), ForeColor = Color.FromArgb(226, 184, 105)
+        };
+        active.Controls.Add(limitsNote);   // added before the header so the header docks above it
         active.Controls.Add(activeHeader);
         grid.Dock = DockStyle.Fill;
         active.Controls.Add(grid);
         grid.BringToFront();
 
         bottom.Visible = false;
-        var content = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, BackColor = bg };
+        var content = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = bg };
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 116));
-        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 244));
         content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         content.Controls.Add(top, 0, 0);
         content.Controls.Add(summary, 0, 1);
-        content.Controls.Add(middle, 0, 2);
-        content.Controls.Add(active, 0, 3);
+        content.Controls.Add(active, 0, 2);
         dashboard.Controls.Add(content);
         pageHost = new Panel { Dock = DockStyle.Fill, BackColor = bg };
         pageHost.Controls.Add(dashboard);
@@ -389,6 +389,16 @@ public sealed class MainForm : Form
 
     private sealed record ProcessRow(string Name, int Pid, string Path, bool IsSystem);
 
+    // One grid row = one executable (all of its running instances). Rules are per executable path anyway.
+    private sealed record ProcessGroup(string Key, string Name, string Path, List<int> Pids, bool IsSystem);
+
+    private static List<ProcessGroup> GroupByExecutable(List<ProcessRow> processes) =>
+        processes
+            .GroupBy(r => r.Path.Length > 0 ? r.Path : "name:" + r.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new ProcessGroup(g.Key, g.First().Name, g.First().Path, g.Select(x => x.Pid).OrderBy(x => x).ToList(), g.First().IsSystem))
+            .OrderBy(g => g.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
     private void QueueReload()
     {
         if (IsDisposed) return;
@@ -406,8 +416,7 @@ public sealed class MainForm : Form
         {
             string query = search.Text.Trim();
             int filterIndex = filter.SelectedIndex;
-            int? selectedPid = grid.CurrentRow?.Cells["pid"].Value is int pid ? pid : null;
-            string? selectedPath = grid.CurrentRow?.Cells["path"].Value?.ToString();
+            string? selectedKey = (grid.CurrentRow?.Tag as ProcessGroup)?.Key;
             int firstVisible = grid.FirstDisplayedScrollingRowIndex;
 
             var snapshots = await Task.Run(() => SnapshotProcesses(query, filterIndex));
@@ -420,13 +429,15 @@ public sealed class MainForm : Form
             }
             if (grid.IsCurrentCellInEditMode) return; // the next timer tick retries
 
-            var rows = snapshots.Select(p =>
+            var groups = GroupByExecutable(snapshots);
+            var rows = groups.Select(p =>
             {
                 var rule = RuleCatalog.Find(settings, p.Path);
-                return new object[] { ExecutableIcon(p.Path), p.Name, rule?.Blocked == true ? "Blocked" : "Active", "—", "—", "—",
+                string display = p.Pids.Count > 1 ? p.Name + " (" + p.Pids.Count.ToString(CultureInfo.InvariantCulture) + ")" : p.Name;
+                return new object[] { ExecutableIcon(p.Path), display, rule?.Blocked == true ? "Blocked" : "Active", "—", "—", "—",
                     rule?.DownloadLimitKBps?.ToString(CultureInfo.InvariantCulture) ?? "Unlimited",
                     rule?.UploadLimitKBps?.ToString(CultureInfo.InvariantCulture) ?? "Unlimited",
-                    rule is null ? "None" : "Custom", "•••", p.Pid, p.Path };
+                    rule is null ? "None" : "Custom", "•••", string.Join(", ", p.Pids), p.Path };
             }).ToList();
 
             grid.SuspendLayout();
@@ -437,8 +448,8 @@ public sealed class MainForm : Form
                 for (int i = 0; i < rows.Count; i++)
                 {
                     int row = grid.Rows.Add(rows[i]);
-                    if (selectedPid.HasValue && Equals(rows[i][10], selectedPid.Value) &&
-                        string.Equals(rows[i][11]?.ToString(), selectedPath, StringComparison.OrdinalIgnoreCase))
+                    grid.Rows[row].Tag = groups[i];
+                    if (selectedKey is not null && string.Equals(groups[i].Key, selectedKey, StringComparison.OrdinalIgnoreCase))
                         selectedIndex = row;
                 }
                 grid.ClearSelection();
@@ -452,7 +463,7 @@ public sealed class MainForm : Form
             }
             finally { grid.ResumeLayout(); }
             status.Text = "Right-click an application for controls";
-            processCount.Text = rows.Count.ToString(CultureInfo.InvariantCulture) + "  Processes";
+            processCount.Text = rows.Count.ToString(CultureInfo.InvariantCulture) + "  Applications";
             ruleCount.Text = settings.Rules.Count.ToString(CultureInfo.InvariantCulture) + "  Saved rules";
         }
         finally
@@ -757,12 +768,14 @@ public sealed class MainForm : Form
         using var dialog = new SaveFileDialog { Filter = "CSV (*.csv)|*.csv", FileName = "fluxlimiter-processes.csv" };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var csv = new StringBuilder();
-        csv.AppendLine("Application,PID,Executable,DownloadLimitKBps,UploadLimitKBps,Blocked");
+        csv.AppendLine("Application,Instances,PIDs,Executable,DownloadLimitKBps,UploadLimitKBps,Blocked");
         foreach (DataGridViewRow row in grid.Rows)
         {
+            var group = row.Tag as ProcessGroup;
             string[] values = {
-                row.Cells["app"].Value?.ToString() ?? "",
-                row.Cells["pid"].Value?.ToString() ?? "",
+                group?.Name ?? row.Cells["app"].Value?.ToString() ?? "",
+                (group?.Pids.Count ?? 1).ToString(CultureInfo.InvariantCulture),
+                group is null ? row.Cells["pid"].Value?.ToString() ?? "" : string.Join(";", group.Pids),
                 row.Cells["path"].Value?.ToString() ?? "",
                 row.Cells["down"].Value?.ToString() ?? "",
                 row.Cells["up"].Value?.ToString() ?? "",
