@@ -191,12 +191,18 @@ public sealed class MainForm : Form
         sevenDays.Dock = DockStyle.Fill; sevenDays.Margin = new Padding(8, 0, 0, 0);
         middle.Controls.Add(topApps, 0, 0); middle.Controls.Add(sevenDays, 1, 0);
 
-        var active = new Panel { Dock = DockStyle.Fill, BackColor = panel, Margin = new Padding(0, 16, 0, 0), Padding = new Padding(20, 54, 20, 18) };
-        active.Controls.Add(new Label { Text = "Active Applications", Left = 20, Top = 14, Width = 260, Height = 32, Font = new Font("Segoe UI Semibold", 15), ForeColor = ink });
-        toolbar.Dock = DockStyle.Top;
-        toolbar.Height = 48;
-        toolbar.Padding = new Padding(640, 4, 0, 4);
-        active.Controls.Add(toolbar);
+        var active = new Panel { Dock = DockStyle.Fill, BackColor = panel, Margin = new Padding(0, 16, 0, 0), Padding = new Padding(20, 8, 20, 18) };
+        var activeHeader = new TableLayoutPanel { Dock = DockStyle.Top, Height = 48, ColumnCount = 2, RowCount = 1, BackColor = panel, Padding = new Padding(0) };
+        activeHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        activeHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 640));
+        activeHeader.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        toolbar.RowStyles.Clear();
+        toolbar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        toolbar.Dock = DockStyle.Fill;
+        toolbar.Padding = new Padding(0);
+        activeHeader.Controls.Add(new Label { Text = "Active Applications", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Segoe UI Semibold", 15), ForeColor = ink }, 0, 0);
+        activeHeader.Controls.Add(toolbar, 1, 0);
+        active.Controls.Add(activeHeader);
         grid.Dock = DockStyle.Fill;
         active.Controls.Add(grid);
         grid.BringToFront();
@@ -217,6 +223,7 @@ public sealed class MainForm : Form
         shell.Controls.Add(pageHost);
         shell.Controls.Add(sidebar);
         Controls.Add(shell);
+        NavigateTo("Dashboard");
         searchDebounce.Tick += (_, _) => { searchDebounce.Stop(); QueueReload(); };
         refresh.Tick += (_, _) => { if (!grid.IsCurrentCellInEditMode && grid.ContextMenuStrip?.Visible != true) QueueReload(); };
         refresh.Start();
@@ -231,7 +238,7 @@ public sealed class MainForm : Form
                 MessageBox.Show(SettingsStore.LastLoadWarning, "FluxLimiter settings recovery");
             TrySynchronizeFirewall(showSuccess: false);
         };
-        _ = ReloadAsync();
+        // The first process snapshot is started by NavigateTo("Dashboard") above.
     }
 
     private void NavigateTo(string pageName)
@@ -248,11 +255,16 @@ public sealed class MainForm : Form
         pageHost.SuspendLayout();
         try
         {
-            pageHost.Controls.Clear();
+            foreach (Control old in pageHost.Controls.Cast<Control>().ToList())
+            {
+                pageHost.Controls.Remove(old);
+                if (!ReferenceEquals(old, dashboardPage)) old.Dispose();
+            }
             if (pageName == "Dashboard")
             {
                 pageHost.Controls.Add(dashboardPage);
                 dashboardPage.Dock = DockStyle.Fill;
+                QueueReload();
                 return;
             }
 
@@ -380,6 +392,7 @@ public sealed class MainForm : Form
     private void QueueReload()
     {
         if (IsDisposed) return;
+        if (dashboardPage is not null && dashboardPage.Parent is null) return; // another page is showing
         if (reloading) { refreshQueued = true; return; }
         _ = ReloadAsync();
     }
