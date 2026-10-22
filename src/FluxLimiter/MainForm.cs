@@ -667,4 +667,152 @@ public sealed class MainForm : Form
         try { File.WriteAllText(dialog.FileName, csv.ToString(), new UTF8Encoding(true)); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { MessageBox.Show(ex.Message, "Export failed"); }
     }
+}        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Set speed limit", null, (_, _) => { if (grid.CurrentRow is not null) EditRule(grid.CurrentRow.Index); });
+        menu.Items.Add("Toggle block rule", null, (_, _) => ToggleBlockSelected());
+        menu.Items.Add("Exclude from list", null, (_, _) => MessageBox.Show("Exclusion persistence is not implemented yet."));
+
+        grid.ContextMenuStrip = menu;
+        menu.Closed += (_, _) =>
+        {
+            if (refreshDeferredByContextMenu && !IsDisposed)
+            {
+                refreshDeferredByContextMenu = false;
+                QueueReload();
+            }
+        };
+        grid.CellMouseDown += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Right && e.RowIndex >= 0)
+            {
+                grid.ClearSelection();
+                grid.Rows[e.RowIndex].Selected = true;
+                grid.CurrentCell = grid.Rows[e.RowIndex].Cells["app"];
+            }
+        };
+    }
+
+    private void ToggleBlockSelected()
+    {
+        string path = grid.CurrentRow?.Cells["path"].Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(path)) { MessageBox.Show("Executable path unavailable."); return; }
+        if (!TryPersistMutation(() =>
+        {
+            var rule = RuleCatalog.Find(settings, path);
+            if (rule is null)
+                settings.Rules.Add(new AppRule { ExecutablePath = path, Blocked = true });
+            else
+                rule.Blocked = !rule.Blocked;
+        }))
+        {
+            Reload();
+            return;
+        }
+        Reload();
+    }
+
+    private bool TryPersistMutation(Action mutation)
+    {
+        // Keep the in-memory model identical to disk if persistence is unavailable or fails.
+        if (settingsSaveDisabled)
+        {
+            MessageBox.Show("Settings cannot be saved because the previous settings file could not be safely preserved.", "Saving disabled");
+            return false;
+        }
+
+        string snapshot = System.Text.Json.JsonSerializer.Serialize(settings);
+        mutation();
+        if (TrySaveSettings())
+        {
+            TrySynchronizeFirewall(showSuccess: false);
+            return true;
+        }
+
+        try
+        {
+            var restored = System.Text.Json.JsonSerializer.Deserialize<AppSettings>(snapshot);
+            if (restored is not null)
+            {
+                settings.Rules = restored.Rules ?? new();
+                settings.Groups = restored.Groups ?? new();
+                settings.StartWithWindows = restored.StartWithWindows;
+            }
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            // Snapshot is generated from our own in-memory model; this should not occur.
+        }
+        return false;
+    }
+
+    private void TrySynchronizeFirewall(bool showSuccess)
+    {
+        try
+        {
+            FirewallEnforcer.Synchronize(settings);
+            if (showSuccess) MessageBox.Show("Windows Firewall block rules synchronized.", "FluxLimiter");
+        }
+        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException or InvalidOperationException or PlatformNotSupportedException)
+        {
+            MessageBox.Show(
+                "The rule was saved, but Windows Firewall enforcement could not be synchronized.\n\n" + ex.Message,
+                "FluxLimiter enforcement");
+        }
+    }
+
+    private bool TrySaveSettings()
+    {
+        if (settingsSaveDisabled)
+        {
+            MessageBox.Show("Settings cannot be saved because the previous settings file could not be safely preserved.", "Saving disabled");
+            return false;
+        }
+        try
+        {
+            SettingsStore.Save(settings);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(ex.Message, "Unable to save settings");
+            return false;
+        }
+    }
+
+    private void WithSelectedPath(Action<string> action)
+    {
+        var path = grid.CurrentRow?.Cells["path"].Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(path)) { MessageBox.Show("Executable path unavailable."); return; }
+        action(path);
+    }
+
+    internal static string CsvCell(string value)
+    {
+        // Prevent spreadsheet applications from interpreting exported process data as formulas.
+        string safe = value;
+        if (safe.Length > 0 && "=+-@\t\r".Contains(safe[0])) safe = "'" + safe;
+        return "\"" + safe.Replace("\"", "\"\"") + "\"";
+    }
+
+    private void ExportCsv()
+    {
+        using var dialog = new SaveFileDialog { Filter = "CSV (*.csv)|*.csv", FileName = "fluxlimiter-processes.csv" };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        var csv = new StringBuilder();
+        csv.AppendLine("Application,PID,Executable,DownloadLimitKBps,UploadLimitKBps,Blocked");
+        foreach (DataGridViewRow row in grid.Rows)
+        {
+            string[] values = {
+                row.Cells["app"].Value?.ToString() ?? "",
+                row.Cells["pid"].Value?.ToString() ?? "",
+                row.Cells["path"].Value?.ToString() ?? "",
+                row.Cells["down"].Value?.ToString() ?? "",
+                row.Cells["up"].Value?.ToString() ?? "",
+                string.Equals(row.Cells["status"].Value?.ToString(), "Blocked", StringComparison.OrdinalIgnoreCase) ? "true" : "false"
+            };
+            csv.AppendLine(string.Join(",", values.Select(CsvCell)));
+        }
+        try { File.WriteAllText(dialog.FileName, csv.ToString(), new UTF8Encoding(true)); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { MessageBox.Show(ex.Message, "Export failed"); }
+    }
 }
