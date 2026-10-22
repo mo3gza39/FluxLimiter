@@ -11,9 +11,10 @@ public sealed class MainForm : Form
 {
     private readonly AppSettings settings = SettingsStore.Load();
     private readonly NetworkSampler network = new();
+    private readonly TrafficCollector traffic = new();
     private readonly Label speed = new();
     private readonly Label uploadSpeed = new();
-    private readonly DataGridView grid = new();
+    private readonly BufferedDataGridView grid = new();
     private readonly TextBox search = new();
     private readonly ComboBox filter = new();
     private readonly System.Windows.Forms.Timer refresh = new() { Interval = 5000 };
@@ -34,6 +35,7 @@ public sealed class MainForm : Form
     private readonly Color bg = Color.FromArgb(16, 22, 34);
     private readonly Color panel = Color.FromArgb(25, 34, 49);
     private readonly Color ink = Color.FromArgb(229, 237, 246);
+    private readonly Dictionary<(int Pid, long StartTicks), string> processPathCache = new();
 
     public MainForm()
     {
@@ -229,6 +231,9 @@ public sealed class MainForm : Form
         refresh.Start();
         speedTimer.Tick += (_, _) => { try { var rates = network.Sample(); speed.Text = $"↓ {rates.DownloadKBps.ToString("F1", CultureInfo.InvariantCulture)} KB/s"; uploadSpeed.Text = $"↑ {rates.UploadKBps.ToString("F1", CultureInfo.InvariantCulture)} KB/s"; } catch (Exception ex) when (ex is System.Net.NetworkInformation.NetworkInformationException or InvalidOperationException) { speed.Text = "Unavailable"; uploadSpeed.Text = "Unavailable"; } };
         speedTimer.Start();
+        Resize += (_, _) => UpdateSamplingState();
+        FormClosed += (_, _) => traffic.Dispose();
+        _ = traffic.StartAsync();
         SetupContextMenu();
         if (!string.IsNullOrWhiteSpace(SettingsStore.LastLoadWarning))
             settingsSaveDisabled = SettingsStore.LastLoadWarning.Contains("Saving is disabled", StringComparison.OrdinalIgnoreCase);
@@ -434,7 +439,12 @@ public sealed class MainForm : Form
             {
                 var rule = RuleCatalog.Find(settings, p.Path);
                 string display = p.Pids.Count > 1 ? p.Name + " (" + p.Pids.Count.ToString(CultureInfo.InvariantCulture) + ")" : p.Name;
-                return new object[] { ExecutableIcon(p.Path), display, rule?.Blocked == true ? "Blocked" : "Active", "—", "—", "—",
+                var rate = traffic.GetRate(p.Pids);
+                var total = traffic.GetTotal(p.Pids);
+                return new object[] { ExecutableIcon(p.Path), display, rule?.Blocked == true ? "Blocked" : "Active",
+                    rate.HasData ? rate.DownloadKBps.ToString("F1", CultureInfo.InvariantCulture) + " KB/s" : "—",
+                    rate.HasData ? rate.UploadKBps.ToString("F1", CultureInfo.InvariantCulture) + " KB/s" : "—",
+                    total.HasData ? FormatBytes(total.TotalBytes) : "—",
                     rule?.DownloadLimitKBps?.ToString(CultureInfo.InvariantCulture) ?? "Unlimited",
                     rule?.UploadLimitKBps?.ToString(CultureInfo.InvariantCulture) ?? "Unlimited",
                     rule is null ? "None" : "Custom", "•••", string.Join(", ", p.Pids), p.Path };
@@ -443,14 +453,31 @@ public sealed class MainForm : Form
             grid.SuspendLayout();
             try
             {
-                grid.Rows.Clear();
+                var existing = grid.Rows.Cast<DataGridViewRow>()
+                    .Where(r => r.Tag is ProcessGroup)
+                    .ToDictionary(r => ((ProcessGroup)r.Tag!).Key, StringComparer.OrdinalIgnoreCase);
+                var liveKeys = new HashSet<string>(groups.Select(g => g.Key), StringComparer.OrdinalIgnoreCase);
+                foreach (var stale in existing.Where(x => !liveKeys.Contains(x.Key)).Select(x => x.Value).ToList())
+                    grid.Rows.Remove(stale);
+
                 int selectedIndex = -1;
                 for (int i = 0; i < rows.Count; i++)
                 {
-                    int row = grid.Rows.Add(rows[i]);
-                    grid.Rows[row].Tag = groups[i];
+                    DataGridViewRow target;
+                    if (existing.TryGetValue(groups[i].Key, out var current) && current.DataGridView is not null)
+                    {
+                        target = current;
+                        for (int c = 0; c < rows[i].Length; c++)
+                            if (!Equals(target.Cells[c].Value, rows[i][c])) target.Cells[c].Value = rows[i][c];
+                    }
+                    else
+                    {
+                        int added = grid.Rows.Add(rows[i]);
+                        target = grid.Rows[added];
+                    }
+                    target.Tag = groups[i];
                     if (selectedKey is not null && string.Equals(groups[i].Key, selectedKey, StringComparison.OrdinalIgnoreCase))
-                        selectedIndex = row;
+                        selectedIndex = target.Index;
                 }
                 grid.ClearSelection();
                 if (selectedIndex >= 0)
@@ -497,7 +524,7 @@ public sealed class MainForm : Form
         return image;
     }
 
-    private static List<ProcessRow> SnapshotProcesses(string query, int filterIndex)
+    private List<ProcessRow> SnapshotProcesses(string query, int filterIndex)
     {
         string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
         var rows = new List<ProcessRow>();
@@ -507,7 +534,17 @@ public sealed class MainForm : Form
             {
                 string name = p.ProcessName;
                 string path;
-                try { path = p.MainModule?.FileName ?? ""; } catch { path = ""; }
+                long startTicks;
+                try { startTicks = p.StartTime.ToUniversalTime().Ticks; } catch { startTicks = 0; }
+                var cacheKey = (p.Id, startTicks);
+                lock (processPathCache)
+                {
+                    if (!processPathCache.TryGetValue(cacheKey, out path!))
+                    {
+                        try { path = p.MainModule?.FileName ?? ""; } catch { path = ""; }
+                        processPathCache[cacheKey] = path;
+                    }
+                }
                 if (!name.Contains(query, StringComparison.OrdinalIgnoreCase) && !path.Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
                 bool isSystem = path.Length == 0 || path.StartsWith(windows, StringComparison.OrdinalIgnoreCase);
                 if (filterIndex == 1 && isSystem) continue;
@@ -519,6 +556,24 @@ public sealed class MainForm : Form
             finally { p.Dispose(); }
         }
         return rows;
+    }
+
+    private void UpdateSamplingState()
+    {
+        bool active = WindowState != FormWindowState.Minimized;
+        refresh.Enabled = active;
+        speedTimer.Enabled = active;
+        if (active) QueueReload();
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024) return bytes.ToString(CultureInfo.InvariantCulture) + " B";
+        double value = bytes / 1024d;
+        if (value < 1024) return value.ToString("F1", CultureInfo.InvariantCulture) + " KB";
+        value /= 1024d;
+        if (value < 1024) return value.ToString("F1", CultureInfo.InvariantCulture) + " MB";
+        return (value / 1024d).ToString("F2", CultureInfo.InvariantCulture) + " GB";
     }
 
     private void Reload() => QueueReload();
