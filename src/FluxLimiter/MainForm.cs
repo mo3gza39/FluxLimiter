@@ -12,6 +12,7 @@ public sealed class MainForm : Form
     private readonly AppSettings settings = SettingsStore.Load();
     private readonly NetworkSampler network = new();
     private readonly Label speed = new();
+    private readonly Label uploadSpeed = new();
     private readonly DataGridView grid = new();
     private readonly TextBox search = new();
     private readonly ComboBox filter = new();
@@ -107,7 +108,7 @@ public sealed class MainForm : Form
         grid.DefaultCellStyle.ForeColor = ink;
         grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(38, 99, 100);
         grid.DefaultCellStyle.SelectionForeColor = Color.White;
-        grid.Columns.Add(new DataGridViewImageColumn { Name = "icon", HeaderText = "", Width = 34, ImageLayout = DataGridViewImageCellLayout.Zoom, ReadOnly = true });
+        grid.Columns.Add(new DataGridViewImageColumn { Name = "icon", HeaderText = "", Width = 34, ImageLayout = DataGridViewImageCellLayout.Zoom, ReadOnly = true, DefaultCellStyle = new DataGridViewCellStyle { NullValue = null } });
         grid.Columns.Add("app", "Application");
         grid.Columns.Add("status", "Status");
         grid.Columns.Add("download", "Download ↓");
@@ -131,7 +132,6 @@ public sealed class MainForm : Form
         grid.Columns["up"].Width = 108;
         grid.Columns["rule"].Width = 82;
         grid.Columns["action"].Width = 78;
-        grid.Columns["action"].Frozen = true;
         foreach (DataGridViewColumn column in grid.Columns) column.ReadOnly = true;
         grid.Columns["down"].ReadOnly = false;
         grid.Columns["up"].ReadOnly = false;
@@ -141,7 +141,8 @@ public sealed class MainForm : Form
         var bottom = new Panel { Dock = DockStyle.Bottom, Height = 68, BackColor = panel };
         speed.SetBounds(28, 37, 900, 24);
         speed.ForeColor = Color.FromArgb(91, 225, 184);
-        speed.Text = "Device traffic: sampling... (not per-app; virtual adapters may double-count)";
+        speed.Text = "Sampling...";
+        uploadSpeed.Text = "Sampling...";
         bottom.Controls.Add(speed);
         status.AutoSize = true;
         status.Left = 28;
@@ -170,7 +171,7 @@ public sealed class MainForm : Form
         var summary = new TableLayoutPanel { Dock = DockStyle.Top, Height = 104, ColumnCount = 4, RowCount = 1, BackColor = bg, Margin = new Padding(0, 16, 0, 16), Padding = new Padding(0) };
         for (int i = 0; i < 4; i++) summary.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
         summary.Controls.Add(DashboardCard("DOWNLOAD", speed, "Live device traffic"), 0, 0);
-        summary.Controls.Add(DashboardCard("UPLOAD", new Label { Text = "Live", ForeColor = ink, Font = new Font("Segoe UI Semibold", 17) }, "Live device traffic"), 1, 0);
+        summary.Controls.Add(DashboardCard("UPLOAD", uploadSpeed, "Live device traffic"), 1, 0);
         summary.Controls.Add(DashboardCard("DAILY USAGE", dailyUsage, "Collector not connected"), 2, 0);
         summary.Controls.Add(DashboardCard("MONTHLY USAGE", monthlyUsage, "Collector not connected"), 3, 0);
 
@@ -205,15 +206,17 @@ public sealed class MainForm : Form
         searchDebounce.Tick += (_, _) => { searchDebounce.Stop(); QueueReload(); };
         refresh.Tick += (_, _) => { if (!grid.IsCurrentCellInEditMode && grid.ContextMenuStrip?.Visible != true) QueueReload(); };
         refresh.Start();
-        speedTimer.Tick += (_, _) => { try { var rates = network.Sample(); speed.Text = $"Live traffic    ↓ {rates.DownloadKBps:F1} KB/s     ↑ {rates.UploadKBps:F1} KB/s"; } catch (Exception ex) when (ex is System.Net.NetworkInformation.NetworkInformationException or InvalidOperationException) { speed.Text = "Device speed unavailable"; } };
+        speedTimer.Tick += (_, _) => { try { var rates = network.Sample(); speed.Text = $"↓ {rates.DownloadKBps.ToString("F1", CultureInfo.InvariantCulture)} KB/s"; uploadSpeed.Text = $"↑ {rates.UploadKBps.ToString("F1", CultureInfo.InvariantCulture)} KB/s"; } catch (Exception ex) when (ex is System.Net.NetworkInformation.NetworkInformationException or InvalidOperationException) { speed.Text = "Unavailable"; uploadSpeed.Text = "Unavailable"; } };
         speedTimer.Start();
         SetupContextMenu();
         if (!string.IsNullOrWhiteSpace(SettingsStore.LastLoadWarning))
-        {
             settingsSaveDisabled = SettingsStore.LastLoadWarning.Contains("Saving is disabled", StringComparison.OrdinalIgnoreCase);
-            MessageBox.Show(SettingsStore.LastLoadWarning, "FluxLimiter settings recovery");
-        }
-        TrySynchronizeFirewall(showSuccess: false);
+        Shown += (_, _) =>
+        {
+            if (!string.IsNullOrWhiteSpace(SettingsStore.LastLoadWarning))
+                MessageBox.Show(SettingsStore.LastLoadWarning, "FluxLimiter settings recovery");
+            TrySynchronizeFirewall(showSuccess: false);
+        };
         _ = ReloadAsync();
     }
 
@@ -304,12 +307,14 @@ public sealed class MainForm : Form
             int firstVisible = grid.FirstDisplayedScrollingRowIndex;
 
             var snapshots = await Task.Run(() => SnapshotProcesses(query, filterIndex));
+            await Task.Run(() => { foreach (var ip in snapshots.Select(x => x.Path).Distinct(StringComparer.OrdinalIgnoreCase)) ExecutableIcon(ip); });
             if (IsDisposed) return;
             if (grid.ContextMenuStrip?.Visible == true)
             {
                 refreshDeferredByContextMenu = true;
                 return;
             }
+            if (grid.IsCurrentCellInEditMode) return; // the next timer tick retries
 
             var rows = snapshots.Select(p =>
             {
@@ -357,18 +362,24 @@ public sealed class MainForm : Form
         }
     }
 
-    private static Image? ExecutableIcon(string path)
+    private readonly Dictionary<string, Image?> iconCache = new(StringComparer.OrdinalIgnoreCase);
+
+    private Image? ExecutableIcon(string path)
     {
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        lock (iconCache) { if (iconCache.TryGetValue(path, out var cached)) return cached; }
+        Image? image = null;
         try
         {
-            using var icon = Icon.ExtractAssociatedIcon(path);
-            return icon?.ToBitmap();
+            if (File.Exists(path))
+            {
+                using var icon = Icon.ExtractAssociatedIcon(path);
+                image = icon?.ToBitmap();
+            }
         }
-        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException)
-        {
-            return null;
-        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception) { }
+        lock (iconCache) { iconCache[path] = image; }
+        return image;
     }
 
     private static List<ProcessRow> SnapshotProcesses(string query, int filterIndex)
@@ -383,7 +394,7 @@ public sealed class MainForm : Form
                 string path;
                 try { path = p.MainModule?.FileName ?? ""; } catch { path = ""; }
                 if (!name.Contains(query, StringComparison.OrdinalIgnoreCase) && !path.Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
-                bool isSystem = path.StartsWith(windows, StringComparison.OrdinalIgnoreCase);
+                bool isSystem = path.Length == 0 || path.StartsWith(windows, StringComparison.OrdinalIgnoreCase);
                 if (filterIndex == 1 && isSystem) continue;
                 if (filterIndex == 2 && !isSystem) continue;
                 rows.Add(new ProcessRow(name, p.Id, path, isSystem));
@@ -631,7 +642,7 @@ public sealed class MainForm : Form
     {
         // Prevent spreadsheet applications from interpreting exported process data as formulas.
         string safe = value;
-        if (safe.Length > 0 && "=+-@".Contains(safe[0])) safe = "'" + safe;
+        if (safe.Length > 0 && "=+-@\t\r".Contains(safe[0])) safe = "'" + safe;
         return "\"" + safe.Replace("\"", "\"\"") + "\"";
     }
 
