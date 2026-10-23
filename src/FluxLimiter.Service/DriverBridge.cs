@@ -14,8 +14,8 @@ public sealed class DriverBridge : IDisposable
     public ServiceStatus GetStatus() => new(
         typeof(DriverBridge).Assembly.GetName().Version?.ToString() ?? "0.0.0",
         IsConnected,
-        IsConnected ? "driver" : "unavailable",
-        IsConnected);
+        IsConnected ? "driver-detected-unverified" : "unavailable",
+        false);
 
     public bool TryConnect()
     {
