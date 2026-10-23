@@ -392,7 +392,7 @@ public sealed class MainForm : Form
         return b;
     }
 
-    private sealed record ProcessRow(string Name, int Pid, string Path, bool IsSystem);
+    private sealed record ProcessRow(string Name, int Pid, string Path, bool IsSystem, long StartTicks);
 
     // One grid row = one executable (all of its running instances). Rules are per executable path anyway.
     private sealed record ProcessGroup(string Key, string Name, string Path, List<int> Pids, bool IsSystem);
@@ -424,7 +424,10 @@ public sealed class MainForm : Form
             string? selectedKey = (grid.CurrentRow?.Tag as ProcessGroup)?.Key;
             int firstVisible = grid.FirstDisplayedScrollingRowIndex;
 
-            var snapshots = await Task.Run(() => SnapshotProcesses(query, filterIndex));
+            var allSnapshots = await Task.Run(SnapshotAllProcesses);
+            traffic.Prune(allSnapshots.Select(p => p.Pid));
+            PruneProcessPathCache(allSnapshots);
+            var snapshots = FilterProcesses(allSnapshots, query, filterIndex);
             await Task.Run(() => { foreach (var ip in snapshots.Select(x => x.Path).Distinct(StringComparer.OrdinalIgnoreCase)) ExecutableIcon(ip); });
             if (IsDisposed) return;
             if (grid.ContextMenuStrip?.Visible == true)
@@ -489,7 +492,7 @@ public sealed class MainForm : Form
                     grid.FirstDisplayedScrollingRowIndex = firstVisible;
             }
             finally { grid.ResumeLayout(); }
-            status.Text = "Right-click an application for controls";
+            status.Text = traffic.Status + " · Right-click an application for controls";
             processCount.Text = rows.Count.ToString(CultureInfo.InvariantCulture) + "  Applications";
             ruleCount.Text = settings.Rules.Count.ToString(CultureInfo.InvariantCulture) + "  Saved rules";
         }
@@ -524,7 +527,7 @@ public sealed class MainForm : Form
         return image;
     }
 
-    private List<ProcessRow> SnapshotProcesses(string query, int filterIndex)
+    private List<ProcessRow> SnapshotAllProcesses()
     {
         string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
         var rows = new List<ProcessRow>();
@@ -545,11 +548,8 @@ public sealed class MainForm : Form
                         processPathCache[cacheKey] = path;
                     }
                 }
-                if (!name.Contains(query, StringComparison.OrdinalIgnoreCase) && !path.Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
                 bool isSystem = path.Length == 0 || path.StartsWith(windows, StringComparison.OrdinalIgnoreCase);
-                if (filterIndex == 1 && isSystem) continue;
-                if (filterIndex == 2 && !isSystem) continue;
-                rows.Add(new ProcessRow(name, p.Id, path, isSystem));
+                rows.Add(new ProcessRow(name, p.Id, path, isSystem, startTicks));
             }
             catch (InvalidOperationException) { }
             catch (System.ComponentModel.Win32Exception) { }
@@ -558,12 +558,18 @@ public sealed class MainForm : Form
         return rows;
     }
 
+    private static List<ProcessRow> FilterProcesses(IEnumerable<ProcessRow> rows, string query, int filterIndex) =>
+        rows.Where(p =>
+            (p.Name.Contains(query, StringComparison.OrdinalIgnoreCase) || p.Path.Contains(query, StringComparison.OrdinalIgnoreCase)) &&
+            (filterIndex == 0 || (filterIndex == 1 && !p.IsSystem) || (filterIndex == 2 && p.IsSystem)))
+            .ToList();
+
     private void PruneProcessPathCache(IEnumerable<ProcessRow> liveProcesses)
     {
-        var live = liveProcesses.Select(p => p.Pid).ToHashSet();
+        var liveKeys = liveProcesses.Select(p => (p.Pid, p.StartTicks)).ToHashSet();
         lock (processPathCache)
         {
-            foreach (var key in processPathCache.Keys.Where(k => !live.Contains(k.Pid)).ToList())
+            foreach (var key in processPathCache.Keys.Where(k => !liveKeys.Contains(k)).ToList())
                 processPathCache.Remove(key);
         }
     }
@@ -621,7 +627,7 @@ public sealed class MainForm : Form
             MessageBox.Show("Executable path unavailable. Try running FluxLimiter as administrator.", "FluxLimiter");
             return;
         }
-        var rule = settings.Rules.FirstOrDefault(r => string.Equals(r.ExecutablePath, path, StringComparison.OrdinalIgnoreCase));
+        var rule = RuleCatalog.Find(settings, path);
         using var dialog = new Form { Text = "Saved rule — " + Path.GetFileName(path), ClientSize = new Size(460, 250), StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, BackColor = panel, ForeColor = ink, Font = Font, AutoScaleMode = AutoScaleMode.Dpi };
         var formLayout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 2, RowCount = 5, BackColor = panel };
         formLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
