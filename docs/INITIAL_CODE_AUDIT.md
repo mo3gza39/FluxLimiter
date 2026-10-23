@@ -1,4 +1,7 @@
 # FluxLimiter — Initial Source Audit
+
+> **Historical document.** This audit describes the 2026-10-21 initial scaffold and is retained for traceability. It is not the current implementation status. See `PROTOTYPE_STATUS.md` and `README.md` for the current state.
+
 Date: 2026-10-21
 Branch: review/initial-audit
 Scope: seven source/configuration files copied from dev/initial-scaffold. Static inspection only; no Windows build, runtime benchmark, or network enforcement test performed.
