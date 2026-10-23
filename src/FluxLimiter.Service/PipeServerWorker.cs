@@ -1,5 +1,7 @@
 using FluxLimiter.Ipc;
 using System.IO.Pipes;
+using System.Security.AccessControl;
+using System.Security.Principal;
 
 namespace FluxLimiter.Service;
 
@@ -11,12 +13,7 @@ public sealed class PipeServerWorker(DriverBridge driver, ILogger<PipeServerWork
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            await using var pipe = new NamedPipeServerStream(
-                ServiceProtocol.PipeName,
-                PipeDirection.InOut,
-                4,
-                PipeTransmissionMode.Byte,
-                PipeOptions.Asynchronous);
+            await using var pipe = CreatePipe();
 
             try
             {
@@ -32,6 +29,34 @@ public sealed class PipeServerWorker(DriverBridge driver, ILogger<PipeServerWork
                 logger.LogWarning(ex, "IPC client failed.");
             }
         }
+    }
+
+    private static NamedPipeServerStream CreatePipe()
+    {
+        var security = new PipeSecurity();
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.AddAccessRule(new PipeAccessRule(
+            new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
+            PipeAccessRights.ReadWrite,
+            AccessControlType.Allow));
+        security.AddAccessRule(new PipeAccessRule(
+            new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+            PipeAccessRights.FullControl,
+            AccessControlType.Allow));
+        security.AddAccessRule(new PipeAccessRule(
+            new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
+            PipeAccessRights.FullControl,
+            AccessControlType.Allow));
+
+        return NamedPipeServerStreamAcl.Create(
+            ServiceProtocol.PipeName,
+            PipeDirection.InOut,
+            4,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous,
+            4096,
+            4096,
+            security);
     }
 
     private async Task HandleClientAsync(Stream pipe, CancellationToken cancellationToken)
