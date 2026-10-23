@@ -56,4 +56,10 @@ Assert(RuleCatalog.ProcessKey(100, @"C:\Apps\browser.exe") != RuleCatalog.Proces
 Assert(RuleCatalog.NormalizePath(@" C:\Apps\browser.exe ") == RuleCatalog.NormalizePath(@"C:\Apps\browser.exe"), "Rule paths normalize consistently");
 Assert(!RuleCatalog.ValidLimit(0) && !RuleCatalog.ValidLimit(-1) && RuleCatalog.ValidLimit(null) && RuleCatalog.ValidLimit(1), "Limit validation rejects zero and negatives");
 
+Assert(TrafficCollector.DirectionOf("TCPIP/Send") == TrafficCollector.Direction.Send, "ETW TCP send direction");
+Assert(TrafficCollector.DirectionOf("UDPIP/Recv") == TrafficCollector.Direction.Receive, "ETW UDP receive direction");
+Assert(TrafficCollector.DirectionOf("TCPIP/SendIPV4") == TrafficCollector.Direction.Send, "ETW IPv4 send direction");
+Assert(TrafficCollector.DirectionOf("TcpIpRecvIPV6") == TrafficCollector.Direction.Receive, "ETW IPv6 receive direction");
+Assert(TrafficCollector.DirectionOf("TCPIP/Connect") == TrafficCollector.Direction.None, "Unrelated ETW event ignored");
+
 Console.WriteLine("All deterministic core tests passed. No OS network enforcement tested.");
