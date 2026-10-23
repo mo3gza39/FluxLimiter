@@ -558,6 +558,16 @@ public sealed class MainForm : Form
         return rows;
     }
 
+    private void PruneProcessPathCache(IEnumerable<ProcessRow> liveProcesses)
+    {
+        var live = liveProcesses.Select(p => p.Pid).ToHashSet();
+        lock (processPathCache)
+        {
+            foreach (var key in processPathCache.Keys.Where(k => !live.Contains(k.Pid)).ToList())
+                processPathCache.Remove(key);
+        }
+    }
+
     private void UpdateSamplingState()
     {
         bool active = WindowState != FormWindowState.Minimized;
