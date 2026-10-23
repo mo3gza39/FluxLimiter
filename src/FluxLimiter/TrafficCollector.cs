@@ -21,6 +21,7 @@ public sealed class TrafficCollector : IDisposable
     private bool disposed;
 
     public bool IsRunning => session is not null;
+    public string Status => IsRunning ? "ETW running (validation pending)" : "ETW unavailable/retrying";
 
     public Task StartAsync()
     {
@@ -73,11 +74,23 @@ public sealed class TrafficCollector : IDisposable
     internal static Direction DirectionOf(string? eventName)
     {
         string name = eventName ?? "";
-        // Exact terminal operation matching avoids counting arbitrary events whose names merely
-        // contain "send"/"receive". The Windows runtime validation step will confirm provider schema.
-        if (name.EndsWith("/Recv", StringComparison.OrdinalIgnoreCase) ||
-            name.EndsWith("/Receive", StringComparison.OrdinalIgnoreCase)) return Direction.Receive;
-        if (name.EndsWith("/Send", StringComparison.OrdinalIgnoreCase)) return Direction.Send;
+        int slash = name.LastIndexOf('/');
+        string operation = slash >= 0 ? name[(slash + 1)..] : name;
+        if (operation.Equals("Recv", StringComparison.OrdinalIgnoreCase) ||
+            operation.Equals("Receive", StringComparison.OrdinalIgnoreCase) ||
+            operation.Equals("RecvIPV4", StringComparison.OrdinalIgnoreCase) ||
+            operation.Equals("RecvIPV6", StringComparison.OrdinalIgnoreCase) ||
+            operation.Equals("ReceiveIPV4", StringComparison.OrdinalIgnoreCase) ||
+            operation.Equals("ReceiveIPV6", StringComparison.OrdinalIgnoreCase) ||
+            operation.EndsWith("RecvIPV4", StringComparison.OrdinalIgnoreCase) ||
+            operation.EndsWith("RecvIPV6", StringComparison.OrdinalIgnoreCase))
+            return Direction.Receive;
+        if (operation.Equals("Send", StringComparison.OrdinalIgnoreCase) ||
+            operation.Equals("SendIPV4", StringComparison.OrdinalIgnoreCase) ||
+            operation.Equals("SendIPV6", StringComparison.OrdinalIgnoreCase) ||
+            operation.EndsWith("SendIPV4", StringComparison.OrdinalIgnoreCase) ||
+            operation.EndsWith("SendIPV6", StringComparison.OrdinalIgnoreCase))
+            return Direction.Send;
         return Direction.None;
     }
 
@@ -85,9 +98,9 @@ public sealed class TrafficCollector : IDisposable
     {
         long payloadPid = ReadLong(data, PidFields);
         if (payloadPid is > 0 and <= int.MaxValue) return (int)payloadPid;
-        // Some provider versions put attribution in the ETW header. Keep this as a fallback,
-        // never as the preferred source.
-        return data.ProcessID > 0 ? data.ProcessID : 0;
+        // Do not attribute an event to the ETW header PID when payload attribution is absent.
+        // Kernel providers can report System/zero in the header, which would corrupt per-app totals.
+        return 0;
     }
 
     private static long ReadLong(TraceEvent data, IEnumerable<string> candidates)
