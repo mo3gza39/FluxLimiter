@@ -26,7 +26,7 @@ public sealed class NamedPipeClient
             ?? throw new InvalidDataException("Service returned an invalid response.");
     }
 
-    internal static async Task WriteLineAsync(Stream stream, string value, CancellationToken cancellationToken)
+    public static async Task WriteLineAsync(Stream stream, string value, CancellationToken cancellationToken)
     {
         var bytes = Encoding.UTF8.GetBytes(value + "\n");
         if (bytes.Length > ServiceProtocol.MaxMessageBytes)
@@ -35,7 +35,7 @@ public sealed class NamedPipeClient
         await stream.FlushAsync(cancellationToken);
     }
 
-    internal static async Task<string> ReadLineAsync(Stream stream, CancellationToken cancellationToken)
+    public static async Task<string> ReadLineAsync(Stream stream, CancellationToken cancellationToken)
     {
         using var buffer = new MemoryStream();
         var one = new byte[1];
