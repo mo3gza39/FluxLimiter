@@ -28,9 +28,9 @@ jobs:
       - name: Run IPC contract tests
         run: dotnet run --project tests/FluxLimiter.IpcTests/FluxLimiter.IpcTests.csproj -c Release
       - name: Publish portable executable
-        run: dotnet publish src/FluxLimiter/FluxLimiter.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableWindowsTargeting=true -o dist
+        run: dotnet publish src/FluxLimiter/FluxLimiter.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:EnableWindowsTargeting=true -o dist
       - name: Publish service
-        run: dotnet publish src/FluxLimiter.Service/FluxLimiter.Service.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableWindowsTargeting=true -o dist-service
+        run: dotnet publish src/FluxLimiter.Service/FluxLimiter.Service.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:EnableWindowsTargeting=true -o dist-service
       - uses: actions/upload-artifact@v4
         with:
           name: FluxLimiter-win-x64
