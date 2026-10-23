@@ -1,11 +1,10 @@
 using System.Diagnostics;
 using System.Net.NetworkInformation;
+using System.Net.Sockets;
 
 namespace FluxLimiter;
 
-// Device-level Internet-facing throughput only. Does not attribute traffic to applications.
-// Samples one active interface with an IPv4 default gateway instead of summing physical
-// and virtual interfaces, which can count the same traffic more than once.
+// Device-level throughput only. This is a UI summary, not per-app accounting.
 public sealed class NetworkSampler
 {
     private string? selectedAdapterId;
@@ -17,17 +16,14 @@ public sealed class NetworkSampler
     {
         long now = Stopwatch.GetTimestamp();
         double elapsed = lastTick == 0 ? 0 : (now - lastTick) / (double)Stopwatch.Frequency;
-
         var adapter = SelectInternetAdapter();
-        if (adapter is null)
-        {
-            Reset(now);
-            return (0, 0);
-        }
+        if (adapter is null) { Reset(now); return (0, 0); }
 
         try
         {
-            var stats = adapter.GetIPv4Statistics();
+            // GetIPStatistics exposes the platform's current IP counters and avoids the legacy
+            // IPv4-only selection used by the first prototype.
+            var stats = adapter.GetIPStatistics();
             if (!string.Equals(selectedAdapterId, adapter.Id, StringComparison.OrdinalIgnoreCase) || elapsed <= 0)
             {
                 selectedAdapterId = adapter.Id;
@@ -42,49 +38,51 @@ public sealed class NetworkSampler
             previousReceived = stats.BytesReceived;
             previousSent = stats.BytesSent;
             lastTick = now;
-
-            if (received < 0 || sent < 0) return (0, 0); // interface reset/reconnect
-            return (received / elapsed / 1024.0, sent / elapsed / 1024.0);
+            if (received < 0 || sent < 0) return (0, 0);
+            return (received / elapsed / 1024d, sent / elapsed / 1024d);
         }
-        catch (NetworkInformationException)
-        {
-            Reset(now);
-            return (0, 0);
-        }
+        catch (NetworkInformationException) { Reset(now); return (0, 0); }
     }
 
     private static NetworkInterface? SelectInternetAdapter()
     {
+        // Prefer an operational interface carrying a default route. Do not rank by link speed:
+        // virtual/Hyper-V adapters commonly advertise 10+ Gbit and would win incorrectly.
+        // Route metric selection is left to the Windows integration layer; this fallback prefers
+        // physical Wi-Fi/Ethernet over virtual/unknown interfaces and supports IPv4 or IPv6 gateways.
         return NetworkInterface.GetAllNetworkInterfaces()
             .Where(a => a.OperationalStatus == OperationalStatus.Up &&
                         a.NetworkInterfaceType != NetworkInterfaceType.Loopback &&
                         a.NetworkInterfaceType != NetworkInterfaceType.Tunnel)
-            .Select(a =>
-            {
-                try
-                {
-                    var p = a.GetIPProperties();
-                    bool hasIpv4Gateway = p.GatewayAddresses.Any(g =>
-                        g.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork &&
-                        !g.Address.Equals(System.Net.IPAddress.Any));
-                    return (Adapter: a, HasGateway: hasIpv4Gateway);
-                }
-                catch (NetworkInformationException)
-                {
-                    return (Adapter: a, HasGateway: false);
-                }
-            })
+            .Select(a => (Adapter: a, HasGateway: HasDefaultGateway(a), Rank: PhysicalRank(a)))
             .Where(x => x.HasGateway)
-            .OrderByDescending(x => x.Adapter.Speed)
+            .OrderBy(x => x.Rank)
             .Select(x => x.Adapter)
             .FirstOrDefault();
     }
 
+    private static bool HasDefaultGateway(NetworkInterface adapter)
+    {
+        try
+        {
+            return adapter.GetIPProperties().GatewayAddresses.Any(g =>
+                !g.Address.Equals(System.Net.IPAddress.Any) &&
+                !g.Address.Equals(System.Net.IPAddress.IPv6Any));
+        }
+        catch (NetworkInformationException) { return false; }
+    }
+
+    private static int PhysicalRank(NetworkInterface adapter) => adapter.NetworkInterfaceType switch
+    {
+        NetworkInterfaceType.Wireless80211 => 0,
+        NetworkInterfaceType.Ethernet or NetworkInterfaceType.GigabitEthernet or NetworkInterfaceType.FastEthernetFx or NetworkInterfaceType.FastEthernetT => 1,
+        _ => 2
+    };
+
     private void Reset(long now)
     {
         selectedAdapterId = null;
-        previousReceived = 0;
-        previousSent = 0;
+        previousReceived = previousSent = 0;
         lastTick = now;
     }
 }
