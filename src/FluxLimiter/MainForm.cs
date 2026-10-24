@@ -247,8 +247,7 @@ public sealed class MainForm : Form
         _ = traffic.StartAsync();
         SetupContextMenu();
         if (!string.IsNullOrWhiteSpace(SettingsStore.LastLoadWarning))
-            settingsSaveDisabled = SettingsStore.LastLoadWarning.Contains("Saving is disabled", StringComparison.OrdinalIgnoreCase);
-        Shown += (_, _) =>
+            settingsSaveDisabled = SettingsStore.LastLoadWarning.Contains("Saving is disabled", StringComparison.OrdinalIgnoreCase);        Shown += (_, _) =>
         {
             if (!string.IsNullOrWhiteSpace(SettingsStore.LastLoadWarning))
                 MessageBox.Show(SettingsStore.LastLoadWarning, "FluxLimiter settings recovery");
@@ -258,7 +257,8 @@ public sealed class MainForm : Form
     }
 
     private void NavigateTo(string pageName)
-    {        if (pageHost is null || dashboardPage is null) return;
+    {
+        if (pageHost is null || dashboardPage is null) return;
 
         foreach (var pair in navButtons)
         {
@@ -497,8 +497,7 @@ public sealed class MainForm : Form
                 {
                     grid.Rows[selectedIndex].Selected = true;
                     grid.CurrentCell = grid.Rows[selectedIndex].Cells["app"];
-                }
-                if (firstVisible >= 0 && firstVisible < grid.Rows.Count)
+                }                if (firstVisible >= 0 && firstVisible < grid.Rows.Count)
                     grid.FirstDisplayedScrollingRowIndex = firstVisible;
             }
             finally { grid.ResumeLayout(); }
@@ -507,7 +506,8 @@ public sealed class MainForm : Form
             ruleCount.Text = settings.Rules.Count.ToString(CultureInfo.InvariantCulture) + "  Saved rules";
         }
         finally
-        {            reloading = false;
+        {
+            reloading = false;
             if (refreshQueued && !IsDisposed)
             {
                 refreshQueued = false;
@@ -747,8 +747,7 @@ public sealed class MainForm : Form
         {
             var rule = RuleCatalog.Find(settings, path);
             if (rule is null)
-                settings.Rules.Add(new AppRule { ExecutablePath = path, Blocked = true });
-            else
+                settings.Rules.Add(new AppRule { ExecutablePath = path, Blocked = true });            else
                 rule.Blocked = !rule.Blocked;
         }))
         {
@@ -757,6 +756,7 @@ public sealed class MainForm : Form
         }
         Reload();
     }
+
     private bool TryPersistMutation(Action mutation)
     {
         // Keep the in-memory model identical to disk if persistence is unavailable or fails.
