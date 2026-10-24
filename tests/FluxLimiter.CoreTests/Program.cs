@@ -61,5 +61,11 @@ Assert(TrafficCollector.DirectionOf("UDPIP/Recv") == TrafficCollector.Direction.
 Assert(TrafficCollector.DirectionOf("TCPIP/SendIPV4") == TrafficCollector.Direction.Send, "ETW IPv4 send direction");
 Assert(TrafficCollector.DirectionOf("TcpIpRecvIPV6") == TrafficCollector.Direction.Receive, "ETW IPv6 receive direction");
 Assert(TrafficCollector.DirectionOf("TCPIP/Connect") == TrafficCollector.Direction.None, "Unrelated ETW event ignored");
+Assert(TrafficCollector.DirectionOf(10, null) == TrafficCollector.Direction.Send, "ETW event ID 10 maps to send");
+Assert(TrafficCollector.DirectionOf(11, null) == TrafficCollector.Direction.Receive, "ETW event ID 11 maps to receive");
+Assert(TrafficCollector.DirectionOf(58, "Unknown") == TrafficCollector.Direction.Send, "ETW event ID 58 maps to send");
+Assert(TrafficCollector.DirectionOf(59, "Unknown") == TrafficCollector.Direction.Receive, "ETW event ID 59 maps to receive");
+Assert(TrafficCollector.DirectionOf("TCPIP/Datareceived") == TrafficCollector.Direction.Receive, "ETW Datareceived variant");
+Assert(TrafficCollector.DirectionOf("UDPIP/DatasentoverUDPprotocol.") == TrafficCollector.Direction.Send, "ETW UDP sent variant with trailing dot");
 
 Console.WriteLine("All deterministic core tests passed. No OS network enforcement tested.");

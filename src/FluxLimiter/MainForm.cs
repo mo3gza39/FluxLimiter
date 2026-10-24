@@ -144,17 +144,8 @@ public sealed class MainForm : Form
         grid.CellEndEdit += (_, e) => { if (e.RowIndex >= 0 && (e.ColumnIndex == grid.Columns["down"].Index || e.ColumnIndex == grid.Columns["up"].Index)) SaveInlineRule(e.RowIndex); };
         grid.CellDoubleClick += (_, e) => { if (e.RowIndex >= 0) EditRule(e.RowIndex); };
 
-        var bottom = new Panel { Dock = DockStyle.Bottom, Height = 68, BackColor = panel };
-        speed.SetBounds(28, 37, 900, 24);
-        speed.ForeColor = Color.FromArgb(91, 225, 184);
         speed.Text = "Sampling...";
         uploadSpeed.Text = "Sampling...";
-        bottom.Controls.Add(speed);
-        status.AutoSize = true;
-        status.Left = 28;
-        status.Top = 12;
-        status.ForeColor = Color.FromArgb(170, 185, 200);
-        bottom.Controls.Add(status);
         // Approved product shell: persistent navigation + dashboard composition.
         var shell = new Panel { Dock = DockStyle.Fill, BackColor = bg };
         var sidebar = new Panel { Dock = DockStyle.Left, Width = 218, BackColor = Color.FromArgb(13, 20, 30) };
@@ -206,12 +197,18 @@ public sealed class MainForm : Form
             Font = new Font("Segoe UI", 9), ForeColor = Color.FromArgb(226, 184, 105)
         };
         active.Controls.Add(limitsNote);   // added before the header so the header docks above it
+        status.Dock = DockStyle.Top;
+        status.Height = 24;
+        status.AutoEllipsis = true;
+        status.TextAlign = ContentAlignment.MiddleLeft;
+        status.ForeColor = Color.FromArgb(170, 185, 200);
+        status.Text = "ETW starting...";
+        active.Controls.Add(status);
         active.Controls.Add(activeHeader);
         grid.Dock = DockStyle.Fill;
         active.Controls.Add(grid);
         grid.BringToFront();
 
-        bottom.Visible = false;
         var content = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = bg };
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 116));
@@ -229,7 +226,21 @@ public sealed class MainForm : Form
         searchDebounce.Tick += (_, _) => { searchDebounce.Stop(); QueueReload(); };
         refresh.Tick += (_, _) => { if (!grid.IsCurrentCellInEditMode && grid.ContextMenuStrip?.Visible != true) QueueReload(); };
         refresh.Start();
-        speedTimer.Tick += (_, _) => { try { var rates = network.Sample(); speed.Text = $"↓ {rates.DownloadKBps.ToString("F1", CultureInfo.InvariantCulture)} KB/s"; uploadSpeed.Text = $"↑ {rates.UploadKBps.ToString("F1", CultureInfo.InvariantCulture)} KB/s"; } catch (Exception ex) when (ex is System.Net.NetworkInformation.NetworkInformationException or InvalidOperationException) { speed.Text = "Unavailable"; uploadSpeed.Text = "Unavailable"; } };
+        speedTimer.Tick += (_, _) =>
+        {
+            try
+            {
+                var rates = network.Sample();
+                speed.Text = $"↓ {rates.DownloadKBps.ToString("F1", CultureInfo.InvariantCulture)} KB/s";
+                uploadSpeed.Text = $"↑ {rates.UploadKBps.ToString("F1", CultureInfo.InvariantCulture)} KB/s";
+            }
+            catch (Exception ex) when (ex is System.Net.NetworkInformation.NetworkInformationException or InvalidOperationException)
+            {
+                speed.Text = "Unavailable";
+                uploadSpeed.Text = "Unavailable";
+            }
+            status.Text = traffic.Status;
+        };
         speedTimer.Start();
         Resize += (_, _) => UpdateSamplingState();
         FormClosed += (_, _) => traffic.Dispose();
@@ -247,8 +258,7 @@ public sealed class MainForm : Form
     }
 
     private void NavigateTo(string pageName)
-    {
-        if (pageHost is null || dashboardPage is null) return;
+    {        if (pageHost is null || dashboardPage is null) return;
 
         foreach (var pair in navButtons)
         {
@@ -425,7 +435,7 @@ public sealed class MainForm : Form
             int firstVisible = grid.FirstDisplayedScrollingRowIndex;
 
             var allSnapshots = await Task.Run(SnapshotAllProcesses);
-            traffic.Prune(allSnapshots.Select(p => p.Pid));
+            traffic.Prune(allSnapshots.Select(p => (p.Pid, p.StartTicks)));
             PruneProcessPathCache(allSnapshots);
             var snapshots = FilterProcesses(allSnapshots, query, filterIndex);
             await Task.Run(() => { foreach (var ip in snapshots.Select(x => x.Path).Distinct(StringComparer.OrdinalIgnoreCase)) ExecutableIcon(ip); });
@@ -497,8 +507,7 @@ public sealed class MainForm : Form
             ruleCount.Text = settings.Rules.Count.ToString(CultureInfo.InvariantCulture) + "  Saved rules";
         }
         finally
-        {
-            reloading = false;
+        {            reloading = false;
             if (refreshQueued && !IsDisposed)
             {
                 refreshQueued = false;
@@ -748,7 +757,6 @@ public sealed class MainForm : Form
         }
         Reload();
     }
-
     private bool TryPersistMutation(Action mutation)
     {
         // Keep the in-memory model identical to disk if persistence is unavailable or fails.
