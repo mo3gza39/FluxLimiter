@@ -5,7 +5,6 @@ using System.Text;
 
 namespace FluxLimiter;
 
-/// <summary>Synchronizes FluxLimiter-owned block rules without disturbing unrelated firewall rules.</summary>
 public static class FirewallEnforcer
 {
     private const string Prefix = "FluxLimiter Block ";
@@ -14,15 +13,13 @@ public static class FirewallEnforcer
     public static void Synchronize(AppSettings settings)
     {
         if (!OperatingSystem.IsWindows()) return;
-        Type policyType = Type.GetTypeFromProgID("HNetCfg.FwPolicy2")
-            ?? throw new PlatformNotSupportedException("Windows Firewall policy API is unavailable.");
-        Type ruleType = Type.GetTypeFromProgID("HNetCfg.FWRule")
-            ?? throw new PlatformNotSupportedException("Windows Firewall rule API is unavailable.");
-        dynamic policy = Activator.CreateInstance(policyType)
-            ?? throw new InvalidOperationException("Unable to open Windows Firewall policy.");
-
+        Type policyType = Type.GetTypeFromProgID("HNetCfg.FwPolicy2") ?? throw new PlatformNotSupportedException("Windows Firewall policy API is unavailable.");
+        Type ruleType = Type.GetTypeFromProgID("HNetCfg.FWRule") ?? throw new PlatformNotSupportedException("Windows Firewall rule API is unavailable.");
+        dynamic policy = Activator.CreateInstance(policyType) ?? throw new InvalidOperationException("Unable to open Windows Firewall policy.");
+        dynamic? rulesCollection = null;
         try
         {
+            rulesCollection = policy.Rules;
             var expected = settings.Rules.Where(r => r.Blocked)
                 .Select(r => RuleCatalog.NormalizePath(r.ExecutablePath))
                 .Where(p => p.Length > 0 && File.Exists(p))
@@ -32,7 +29,7 @@ public static class FirewallEnforcer
 
             var existing = new HashSet<string>(StringComparer.Ordinal);
             var obsolete = new List<string>();
-            foreach (object item in (IEnumerable)rulesCollection
+            foreach (object item in (IEnumerable)rulesCollection)
             {
                 dynamic rule = item;
                 try
@@ -42,29 +39,25 @@ public static class FirewallEnforcer
                     existing.Add(name);
                     if (!expected.ContainsKey(name)) obsolete.Add(name);
                 }
-                finally { Marshal.FinalReleaseComObject(item); }
+                finally { if (Marshal.IsComObject(item)) Marshal.FinalReleaseComObject(item); }
             }
 
-            foreach (string name in obsolete)
-            {
-                try { rulesCollection.Remove(name); }
-                catch (COMException) { }
-            }
-
+            foreach (string name in obsolete) { try { rulesCollection.Remove(name); } catch (COMException) { } }
             foreach (var entry in expected.Values)
-                if (!existing.Contains(entry.Name))
-                    AddRule(rulesCollection, ruleType, entry.Path, entry.Direction, entry.Suffix);
+                if (!existing.Contains(entry.Name)) AddRule(rulesCollection, ruleType, entry.Path, entry.Direction, entry.Suffix);
         }
-        finally\n        {\n            if (rulesCollection is not null && Marshal.IsComObject(rulesCollection)) Marshal.FinalReleaseComObject(rulesCollection);\n            if (Marshal.IsComObject(policy)) Marshal.FinalReleaseComObject(policy);\n        }
+        finally
+        {
+            if (rulesCollection is not null && Marshal.IsComObject(rulesCollection)) Marshal.FinalReleaseComObject(rulesCollection);
+            if (Marshal.IsComObject(policy)) Marshal.FinalReleaseComObject(policy);
+        }
     }
 
-    private static ExpectedRule Expected(string path, int direction, string suffix) =>
-        new(Prefix + StableId(path) + " " + suffix, path, direction, suffix);
+    private static ExpectedRule Expected(string path, int direction, string suffix) => new(Prefix + StableId(path) + " " + suffix, path, direction, suffix);
 
     private static void AddRule(dynamic rulesCollection, Type ruleType, string path, int direction, string suffix)
     {
-        dynamic rule = Activator.CreateInstance(ruleType)
-            ?? throw new InvalidOperationException("Unable to create Windows Firewall rule.");
+        dynamic rule = Activator.CreateInstance(ruleType) ?? throw new InvalidOperationException("Unable to create Windows Firewall rule.");
         try
         {
             rule.Name = Prefix + StableId(path) + " " + suffix;
@@ -77,7 +70,7 @@ public static class FirewallEnforcer
             rule.InterfaceTypes = "All";
             rulesCollection.Add(rule);
         }
-        finally { Marshal.FinalReleaseComObject(rule); }
+        finally { if (Marshal.IsComObject(rule)) Marshal.FinalReleaseComObject(rule); }
     }
 
     private static string StableId(string path)
