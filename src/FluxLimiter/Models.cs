@@ -32,4 +32,6 @@ public sealed class AppSettings
     public List<AppRule> Rules { get; set; } = new();
     public List<ExecutableGroup> Groups { get; set; } = new();
     public bool StartWithWindows { get; set; }
+    public bool CloseToTray { get; set; } = true;
+    public bool TrayNoticeShown { get; set; }
 }
