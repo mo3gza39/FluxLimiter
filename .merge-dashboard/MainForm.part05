@@ -1,0 +1,116 @@
+        limit = n;
+        return true;
+    }
+
+    private void SetupContextMenu()
+    {
+        var menu = new ContextMenuStrip { BackColor = cardBg, ForeColor = ink, ShowImageMargin = false };
+        menu.Items.Add("Set speed limit / rule...", null, (_, _) => { if (grid.CurrentRow is not null) EditRule(grid.CurrentRow.Index); });
+        menu.Items.Add("Toggle Windows Firewall block", null, (_, _) => ToggleBlockSelected());
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Open file location", null, (_, _) => WithSelectedPath(path =>
+        {
+            try { var psi = new ProcessStartInfo("explorer.exe") { UseShellExecute = true }; psi.ArgumentList.Add("/select," + path); Process.Start(psi); }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { MessageBox.Show(ex.Message); }
+        }));
+        menu.Items.Add("Copy executable path", null, (_, _) => WithSelectedPath(Clipboard.SetText));
+        menu.Items.Add("Export visible table to CSV...", null, (_, _) => ExportCsv());
+        grid.ContextMenuStrip = menu;
+        menu.Closed += (_, _) => { if (refreshDeferredByContextMenu && !IsDisposed) { refreshDeferredByContextMenu = false; QueueReload(); } };
+        grid.CellMouseDown += (_, e) => { if (e.Button == MouseButtons.Right && e.RowIndex >= 0) { grid.ClearSelection(); grid.Rows[e.RowIndex].Selected = true; grid.CurrentCell = grid.Rows[e.RowIndex].Cells["app"]; } };
+    }
+
+    private void ToggleBlockSelected()
+    {
+        string path = grid.CurrentRow?.Cells["path"].Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(path)) { MessageBox.Show("Executable path unavailable."); return; }
+        TryPersistMutation(() => { var rule = RuleCatalog.Find(settings, path); bool nextBlock = !(rule?.Blocked ?? false); UpsertOrRemoveRule(path, rule?.DownloadLimitKBps, rule?.UploadLimitKBps, nextBlock); });
+        Reload();
+    }
+
+    private bool TryPersistMutation(Action mutation)
+    {
+        if (settingsSaveDisabled) { MessageBox.Show("Settings cannot be saved because the previous settings file could not be safely preserved.", "Saving disabled"); return false; }
+        string snapshot = System.Text.Json.JsonSerializer.Serialize(settings); mutation();
+        if (TrySaveSettings()) { TriggerFirewallSyncAsync(showSuccess: false); return true; }
+        try
+        {
+            var restored = System.Text.Json.JsonSerializer.Deserialize<AppSettings>(snapshot);
+            if (restored is not null) { settings.Rules = restored.Rules ?? new(); settings.Groups = restored.Groups ?? new(); settings.StartWithWindows = restored.StartWithWindows; }
+        }
+        catch (System.Text.Json.JsonException) { }
+        return false;
+    }
+
+    private void TriggerFirewallSyncAsync(bool showSuccess)
+    {
+        var snapshot = System.Text.Json.JsonSerializer.Deserialize<AppSettings>(System.Text.Json.JsonSerializer.Serialize(settings)) ?? settings;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                FirewallEnforcer.Synchronize(snapshot);
+                if (showSuccess && !IsDisposed) BeginInvoke(() => MessageBox.Show("Windows Firewall block rules synchronized.", "FluxLimiter"));
+            }
+            catch (Exception ex) when (ex is COMException or UnauthorizedAccessException or InvalidOperationException or PlatformNotSupportedException or ArgumentException or InvalidCastException or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException)
+            {
+                if (!IsDisposed) BeginInvoke(() => MessageBox.Show("The rule was saved, but Windows Firewall enforcement could not be synchronized.\n\n" + ex.Message, "FluxLimiter enforcement"));
+            }
+        });
+    }
+
+    private bool TrySaveSettings()
+    {
+        if (settingsSaveDisabled) return false;
+        try { SettingsStore.Save(settings); return true; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { MessageBox.Show(ex.Message, "Unable to save settings"); return false; }
+    }
+
+    private void WithSelectedPath(Action<string> action)
+    {
+        var path = grid.CurrentRow?.Cells["path"].Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(path)) { MessageBox.Show("Executable path unavailable."); return; }
+        action(path);
+    }
+
+    internal static string CsvCell(string value)
+    {
+        string safe = value;
+        if (safe.Length > 0 && "=+-@\t\r".Contains(safe[0])) safe = "'" + safe;
+        return "\"" + safe.Replace("\"", "\"\"") + "\"";
+    }
+
+    private void ExportCsv()
+    {
+        using var dialog = new SaveFileDialog { Filter = "CSV (*.csv)|*.csv", FileName = "fluxlimiter-processes.csv" };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        var csv = new StringBuilder(); csv.AppendLine("Application,Instances,PIDs,Executable,DownloadLimitKBps,UploadLimitKBps,Blocked");
+        foreach (DataGridViewRow row in grid.Rows)
+        {
+            var group = row.Tag as ProcessGroup;
+            string[] values = { group?.Name ?? row.Cells["app"].Value?.ToString() ?? "", (group?.Pids.Count ?? 1).ToString(CultureInfo.InvariantCulture), group is null ? row.Cells["pid"].Value?.ToString() ?? "" : string.Join(";", group.Pids), row.Cells["path"].Value?.ToString() ?? "", row.Cells["down"].Value?.ToString() ?? "", row.Cells["up"].Value?.ToString() ?? "", string.Equals(row.Cells["status"].Value?.ToString(), "● Blocked", StringComparison.OrdinalIgnoreCase) ? "true" : "false" };
+            csv.AppendLine(string.Join(",", values.Select(CsvCell)));
+        }
+        try { File.WriteAllText(dialog.FileName, csv.ToString(), new UTF8Encoding(true)); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { MessageBox.Show(ex.Message, "Export failed"); }
+    }
+
+    private void OnMainFormClosing(object? sender, FormClosingEventArgs e)
+    {
+        if (e.CloseReason == CloseReason.UserClosing && !exitingApplication) { e.Cancel = true; Hide(); return; }
+    }
+
+    private void OnMainFormClosed(object? sender, FormClosedEventArgs e)
+    {
+        refresh.Dispose(); searchDebounce.Dispose(); speedTimer.Dispose(); trayIcon.Visible = false; trayIcon.Dispose(); trayMenu.Dispose(); taskbarOverlay.Dispose(); traffic.Dispose();
+        titleFont.Dispose(); subtitleFont.Dispose(); sectionFont.Dispose(); cardLabelFont.Dispose(); cardValueFont.Dispose(); smallFont.Dispose(); navFont.Dispose();
+        lock (iconCache) { foreach (var img in iconCache.Values) img?.Dispose(); iconCache.Clear(); }
+    }
+
+    private static GraphicsPath RoundedRect(Rectangle bounds, int radius)
+    {
+        int d = radius * 2; var path = new GraphicsPath();
+        path.AddArc(bounds.Left, bounds.Top, d, d, 180, 90); path.AddArc(bounds.Right - d, bounds.Top, d, d, 270, 90);
+        path.AddArc(bounds.Right - d, bounds.Bottom - d, d, d, 0, 90); path.AddArc(bounds.Left, bounds.Bottom - d, d, d, 90, 90); path.CloseFigure(); return path;
+    }
+}
