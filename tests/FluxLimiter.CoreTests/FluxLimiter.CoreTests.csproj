@@ -12,6 +12,7 @@
     <Compile Include="../../src/FluxLimiter/SharedRateLimiter.cs" Link="SharedRateLimiter.cs" />
     <Compile Include="../../src/FluxLimiter/TrafficPacer.cs" Link="TrafficPacer.cs" />
     <Compile Include="../../src/FluxLimiter/TrafficCollector.cs" Link="TrafficCollector.cs" />
+    <Compile Include="../../src/FluxLimiter/DailyUsageStore.cs" Link="DailyUsageStore.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="3.1.21" />
