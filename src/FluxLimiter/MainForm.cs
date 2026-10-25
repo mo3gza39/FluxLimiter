@@ -128,7 +128,7 @@ public sealed class MainForm : Form
         FormClosing += OnMainFormClosing;
         FormClosed += OnMainFormClosed;
 
-        _ = traffic.StartAsync();
+        _ = traffic.StartAsync();\n        LoadPersistedUsage();
 
         if (!string.IsNullOrWhiteSpace(SettingsStore.LastLoadWarning))
             settingsSaveDisabled = SettingsStore.LastLoadWarning.Contains("Saving is disabled", StringComparison.OrdinalIgnoreCase);
@@ -444,7 +444,7 @@ public sealed class MainForm : Form
             {
                 g.DrawEllipse(dbPen, 28, 30, 18, 6); g.DrawLine(dbPen, 28, 33, 28, 50); g.DrawLine(dbPen, 46, 33, 46, 50); g.DrawArc(dbPen, 28, 47, 18, 6, 0, 180);
             }
-            var (rx, tx) = traffic.SessionTotals; long total = rx + tx;
+            long rx = todayReceivedBytes, tx = todaySentBytes; long total = rx + tx;
             TextRenderer.DrawText(g, "Daily Usage", cardLabelFont, new Point(68, 16), mutedInk);
             TextRenderer.DrawText(g, FormatBytes(total), cardValueFont, new Point(66, 34), Color.White);
             string sub = $"↓ {FormatBytes(rx)}   ↑ {FormatBytes(tx)}"; TextRenderer.DrawText(g, sub, smallFont, new Point(68, 65), mutedInk);
@@ -462,7 +462,7 @@ public sealed class MainForm : Form
             using (var badgeBrush = new SolidBrush(Color.FromArgb(22, 35, 54))) { g.FillPath(badgeBrush, badgePath); }
             using (var calPen = new Pen(Color.FromArgb(148, 163, 184), 1.8f))
             { g.DrawRectangle(calPen, 28, 32, 18, 18); g.DrawLine(calPen, 28, 38, 46, 38); g.DrawLine(calPen, 33, 29, 33, 34); g.DrawLine(calPen, 41, 29, 41, 34); }
-            var (rx, tx) = traffic.SessionTotals; double totalGb = (rx + tx) / (1024d * 1024d * 1024d); double quotaGb = 200.0;
+            long rx = monthReceivedBytes, tx = monthSentBytes; double totalGb = (rx + tx) / (1024d * 1024d * 1024d); double quotaGb = 200.0;
             int pct = (int)Math.Clamp(Math.Round((totalGb / quotaGb) * 100.0), 1, 100);
             TextRenderer.DrawText(g, "Monthly Usage", cardLabelFont, new Point(68, 16), mutedInk);
             TextRenderer.DrawText(g, $"{FormatBytes(rx + tx)} / 200 GB", new Font("Segoe UI", 13.5f, FontStyle.Bold), new Point(66, 35), Color.White);
@@ -607,14 +607,14 @@ public sealed class MainForm : Form
             networkStateLabel.ForeColor = network.IsConnected ? accentGreen : Color.FromArgb(244, 63, 94);
             downSparkHistory.Add((float)currentDownKBps); if (downSparkHistory.Count > 12) downSparkHistory.RemoveAt(0);
             upSparkHistory.Add((float)currentUpKBps); if (upSparkHistory.Count > 12) upSparkHistory.RemoveAt(0);
-            taskbarOverlay.UpdateSpeeds(currentDownKBps, currentUpKBps);
+            taskbarOverlay.UpdateSpeeds(currentDownKBps, currentUpKBps);\n            AccumulateDeviceUsage(network.LastReceivedDeltaBytes, network.LastSentDeltaBytes);
         }
         catch (Exception ex) when (ex is System.Net.NetworkInformation.NetworkInformationException or InvalidOperationException) { currentDownKBps = 0; currentUpKBps = 0; }
         downloadCard?.Invalidate(); uploadCard?.Invalidate(); dailyCard?.Invalidate(); monthlyCard?.Invalidate();
         status.Text = traffic.Status + " · Right-click an app or click Action icons (⏸ / 🛡 / ⋮)";
     }
 
-    private static string FormatCardSpeed(double kbpsBytes)
+    private void LoadPersistedUsage()\n    {\n        usageDate = DateTime.Now.Date;\n        (todayReceivedBytes, todaySentBytes) = DailyUsageStore.Load(dailyUsagePath, usageDate);\n        (monthReceivedBytes, monthSentBytes) = DailyUsageStore.LoadMonth(dailyUsagePath, usageDate);\n    }\n\n    private void AccumulateDeviceUsage(long received, long sent)\n    {\n        var today = DateTime.Now.Date;\n        if (today != usageDate) { usageDate = today; LoadPersistedUsage(); }\n        received = Math.Max(0, received); sent = Math.Max(0, sent);\n        todayReceivedBytes += received; todaySentBytes += sent;\n        monthReceivedBytes += received; monthSentBytes += sent;\n        if (++dailyUsageFlushCounter >= 60) { dailyUsageFlushCounter = 0; DailyUsageStore.Add(dailyUsagePath, usageDate, received, sent); }\n    }\n\n    private static string FormatCardSpeed(double kbpsBytes)
     {
         double mbpsBits = (kbpsBytes * 8.0) / 1000.0;
         if (mbpsBits >= 1.0) return mbpsBits.ToString("F1", CultureInfo.InvariantCulture) + " Mbps";
@@ -643,7 +643,7 @@ public sealed class MainForm : Form
         {
             "Rules" => $"Active application rules: {settings.Rules.Count}. Double-click any process on the Dashboard or click the Shield icon to manage limits and firewall blocks.",
             "Monthly Usage" => "Monthly accounting resets automatically on day 1 of each calendar month.",
-            "Statistics" => $"Session traffic collected: {FormatBytes(traffic.SessionTotals.ReceivedBytes + traffic.SessionTotals.SentBytes)}.",
+            "Statistics" => $"Device traffic today: {FormatBytes(todayReceivedBytes + todaySentBytes)}.",
             "Settings" => "Taskbar Speed Overlay is active next to the Windows clock. Use the system tray icon to toggle Mbps/KBps formatting or hide the indicator.",
             "About" => "FluxLimiter — Open-source Windows network bandwidth controller and minimalist taskbar speed monitor.",
             _ => ""
@@ -969,12 +969,12 @@ public sealed class MainForm : Form
 
     private void OnMainFormClosing(object? sender, FormClosingEventArgs e)
     {
-        if (e.CloseReason == CloseReason.UserClosing && !exitingApplication) { e.Cancel = true; Hide(); return; }
+        if (e.CloseReason == CloseReason.UserClosing && !exitingApplication && settings.CloseToTray)\n        {\n            e.Cancel = true; Hide();\n            if (!settings.TrayNoticeShown)\n            {\n                trayIcon.BalloonTipTitle = "FluxLimiter";\n                trayIcon.BalloonTipText = "FluxLimiter is still running in the tray.";\n                trayIcon.ShowBalloonTip(3000);\n                settings.TrayNoticeShown = true;\n                TrySaveSettings();\n            }\n            return;\n        }
     }
 
     private void OnMainFormClosed(object? sender, FormClosedEventArgs e)
     {
-        refresh.Dispose(); searchDebounce.Dispose(); speedTimer.Dispose(); trayIcon.Visible = false; trayIcon.Dispose(); trayMenu.Dispose(); taskbarOverlay.Dispose(); traffic.Dispose();
+        DailyUsageStore.Add(dailyUsagePath, usageDate, 0, 0);\n        refresh.Dispose(); searchDebounce.Dispose(); speedTimer.Dispose(); trayIcon.Visible = false; trayIcon.Dispose(); trayMenu.Dispose(); taskbarOverlay.Dispose(); traffic.Dispose();
         titleFont.Dispose(); subtitleFont.Dispose(); sectionFont.Dispose(); cardLabelFont.Dispose(); cardValueFont.Dispose(); smallFont.Dispose(); navFont.Dispose();
         lock (iconCache) { foreach (var img in iconCache.Values) img?.Dispose(); iconCache.Clear(); }
     }
