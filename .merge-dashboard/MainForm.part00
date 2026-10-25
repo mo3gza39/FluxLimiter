@@ -1,0 +1,280 @@
+using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Windows.Forms;
+
+namespace FluxLimiter;
+
+public sealed class MainForm : Form
+{
+    private readonly AppSettings settings = SettingsStore.Load();
+    private readonly NetworkSampler network = new();
+    private readonly TrafficCollector traffic = new();
+    private readonly BufferedDataGridView grid = new();
+    private readonly TextBox search = new();
+    private readonly ComboBox filter = new();
+    private readonly System.Windows.Forms.Timer refresh = new() { Interval = 3500 };
+    private readonly System.Windows.Forms.Timer searchDebounce = new() { Interval = 280 };
+    private readonly System.Windows.Forms.Timer speedTimer = new() { Interval = 1000 };
+
+    private bool reloading;
+    private bool refreshQueued;
+    private bool refreshDeferredByContextMenu;
+    private bool settingsSaveDisabled;
+    private bool exitingApplication;
+
+    private readonly Dictionary<string, Button> navButtons = new(StringComparer.OrdinalIgnoreCase);
+    private string activeNavPage = "Dashboard";
+    private Panel? dashboardPage;
+    private Panel? pageHost;
+    private readonly Label status = new();
+    private readonly Label networkAdapterLabel = new();
+    private readonly Label networkStateLabel = new();
+
+    // Custom painted Dashboard Cards
+    private Panel? downloadCard;
+    private Panel? uploadCard;
+    private Panel? dailyCard;
+    private Panel? monthlyCard;
+    private Panel? topAppsPanel;
+    private Panel? sevenDayChartPanel;
+
+    private double currentDownKBps;
+    private double currentUpKBps;
+    private readonly List<float> downSparkHistory = new() { 8f, 12f, 10f, 18f, 15f, 24f, 21f, 30f, 26f };
+    private readonly List<float> upSparkHistory = new() { 2f, 3f, 2.5f, 4f, 3.5f, 5f, 4.2f, 6f, 5.2f };
+    private List<(string Name, Image? Icon, long Bytes)> topAppsToday = new();
+
+    // Shared fonts & palette (disposed cleanly on close)
+    private readonly Color bg = Color.FromArgb(11, 18, 32);
+    private readonly Color sidebarBg = Color.FromArgb(13, 21, 36);
+    private readonly Color cardBg = Color.FromArgb(17, 27, 45);
+    private readonly Color cardBorder = Color.FromArgb(29, 43, 66);
+    private readonly Color ink = Color.FromArgb(241, 245, 249);
+    private readonly Color mutedInk = Color.FromArgb(139, 155, 180);
+    private readonly Color accentGreen = Color.FromArgb(0, 230, 118);
+    private readonly Color accentBlue = Color.FromArgb(29, 155, 240);
+
+    private readonly Font titleFont = new("Segoe UI", 21f, FontStyle.Bold);
+    private readonly Font subtitleFont = new("Segoe UI", 9.5f, FontStyle.Regular);
+    private readonly Font sectionFont = new("Segoe UI Semibold", 11.5f, FontStyle.Bold);
+    private readonly Font cardLabelFont = new("Segoe UI", 9f, FontStyle.Regular);
+    private readonly Font cardValueFont = new("Segoe UI", 15.5f, FontStyle.Bold);
+    private readonly Font smallFont = new("Segoe UI", 8.5f, FontStyle.Regular);
+    private readonly Font navFont = new("Segoe UI Semibold", 10f, FontStyle.Regular);
+
+    private readonly Dictionary<(int Pid, long StartTicks), string> processPathCache = new();
+    private readonly Dictionary<string, Image?> iconCache = new(StringComparer.OrdinalIgnoreCase);
+
+    // Taskbar speed widget & tray icon
+    private readonly NotifyIcon trayIcon;
+    private readonly ContextMenuStrip trayMenu;
+    private readonly TaskbarSpeedOverlay taskbarOverlay;
+
+    public MainForm()
+    {
+        Text = "FluxLimiter";
+        Width = 1440;
+        Height = 900;
+        MinimumSize = new Size(1180, 740);
+        BackColor = bg;
+        ForeColor = ink;
+        Font = new Font("Segoe UI", 9.5f);
+        StartPosition = FormStartPosition.CenterScreen;
+        AutoScaleMode = AutoScaleMode.Dpi;
+
+        EnableDarkTitleBar();
+
+        // System Tray + Taskbar Speed Overlay next to the Windows Clock
+        trayMenu = BuildTrayMenu();
+        taskbarOverlay = new TaskbarSpeedOverlay(trayMenu);
+        trayIcon = new NotifyIcon
+        {
+            Text = "FluxLimiter — Network Control",
+            Icon = SystemIcons.Shield,
+            ContextMenuStrip = trayMenu,
+            Visible = true
+        };
+        trayIcon.DoubleClick += (_, _) => RestoreFromTray();
+
+        var shell = new Panel { Dock = DockStyle.Fill, BackColor = bg };
+        var sidebar = BuildSidebar();
+        dashboardPage = BuildDashboardSurface();
+
+        pageHost = new Panel { Dock = DockStyle.Fill, BackColor = bg };
+        pageHost.Controls.Add(dashboardPage);
+
+        shell.Controls.Add(pageHost);
+        shell.Controls.Add(sidebar);
+        Controls.Add(shell);
+
+        ConfigureGrid();
+        SetupContextMenu();
+
+        searchDebounce.Tick += (_, _) => { searchDebounce.Stop(); QueueReload(); };
+        refresh.Tick += (_, _) =>
+        {
+            if (!grid.IsCurrentCellInEditMode && grid.ContextMenuStrip?.Visible != true)
+                QueueReload();
+        };
+        refresh.Start();
+
+        speedTimer.Tick += (_, _) => OnSpeedTimerTick();
+        speedTimer.Start();
+
+        FormClosing += OnMainFormClosing;
+        FormClosed += OnMainFormClosed;
+
+        _ = traffic.StartAsync();
+
+        if (!string.IsNullOrWhiteSpace(SettingsStore.LastLoadWarning))
+            settingsSaveDisabled = SettingsStore.LastLoadWarning.Contains("Saving is disabled", StringComparison.OrdinalIgnoreCase);
+
+        Shown += (_, _) =>
+        {
+            taskbarOverlay.Show();
+            taskbarOverlay.SnapNextToTrayClock();
+            if (!string.IsNullOrWhiteSpace(SettingsStore.LastLoadWarning))
+                MessageBox.Show(SettingsStore.LastLoadWarning, "FluxLimiter settings recovery");
+            TriggerFirewallSyncAsync(showSuccess: false);
+            QueueReload();
+        };
+    }
+
+    private void EnableDarkTitleBar()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763)) return;
+        try
+        {
+            int useDark = 1;
+            DwmSetWindowAttribute(Handle, 20, ref useDark, sizeof(int));
+        }
+        catch { }
+    }
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+
+    private ContextMenuStrip BuildTrayMenu()
+    {
+        var menu = new ContextMenuStrip { BackColor = cardBg, ForeColor = ink, ShowImageMargin = false };
+        menu.Items.Add("Open FluxLimiter Dashboard", null, (_, _) => RestoreFromTray());
+        var toggleOverlay = new ToolStripMenuItem("Show Speed Meter Next to Clock") { Checked = true, CheckOnClick = true };
+        toggleOverlay.CheckedChanged += (_, _) =>
+        {
+            if (toggleOverlay.Checked)
+            {
+                taskbarOverlay.Show();
+                taskbarOverlay.SnapNextToTrayClock();
+            }
+            else
+            {
+                taskbarOverlay.Hide();
+            }
+        };
+        menu.Items.Add(toggleOverlay);
+        var unitToggle = new ToolStripMenuItem("Display Speeds in Mbps / Kbps") { Checked = true, CheckOnClick = true };
+        unitToggle.CheckedChanged += (_, _) => taskbarOverlay.UseBitsPerSecond = unitToggle.Checked;
+        menu.Items.Add(unitToggle);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Exit FluxLimiter", null, (_, _) =>
+        {
+            exitingApplication = true;
+            Close();
+        });
+        return menu;
+    }
+
+    private void RestoreFromTray()
+    {
+        Show();
+        WindowState = FormWindowState.Normal;
+        Activate();
+        QueueReload();
+    }
+
+    private Panel BuildSidebar()
+    {
+        var sidebar = new Panel { Dock = DockStyle.Left, Width = 224, BackColor = sidebarBg, Padding = new Padding(12, 18, 12, 16) };
+        sidebar.Paint += (_, e) =>
+        {
+            using var pen = new Pen(Color.FromArgb(24, 36, 56), 1f);
+            e.Graphics.DrawLine(pen, sidebar.Width - 1, 0, sidebar.Width - 1, sidebar.Height);
+            e.Graphics.DrawLine(pen, 16, 338, sidebar.Width - 16, 338);
+        };
+
+        // Top Brand Header (Blue rounded icon + FluxLimiter title)
+        var brandPanel = new Panel { Left = 14, Top = 14, Width = 196, Height = 44, BackColor = Color.Transparent };
+        brandPanel.Paint += (_, e) =>
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using var logoPath = RoundedRect(new Rectangle(2, 6, 30, 30), 7);
+            using var logoBrush = new LinearGradientBrush(new Rectangle(2, 6, 30, 30),
+                Color.FromArgb(29, 155, 240), Color.FromArgb(0, 97, 255), LinearGradientMode.Vertical);
+            g.FillPath(logoBrush, logoPath);
+            using var barBrush = new SolidBrush(Color.White);
+            g.FillRectangle(barBrush, 9, 22, 3, 8);
+            g.FillRectangle(barBrush, 15, 17, 3, 13);
+            g.FillRectangle(barBrush, 21, 13, 3, 17);
+
+            TextRenderer.DrawText(g, "FluxLimiter", new Font("Segoe UI", 14f, FontStyle.Bold),
+                new Point(42, 8), Color.White);
+        };
+        sidebar.Controls.Add(brandPanel);
+
+        string[] primaryNav = { "Dashboard", "Applications", "Rules", "Monthly Usage", "Statistics" };
+        for (int i = 0; i < primaryNav.Length; i++)
+        {
+            var btn = CreateSidebarButton(primaryNav[i], 76 + (i * 48));
+            sidebar.Controls.Add(btn);
+        }
+
+        string[] secondaryNav = { "Settings", "About" };
+        for (int i = 0; i < secondaryNav.Length; i++)
+        {
+            var btn = CreateSidebarButton(secondaryNav[i], 354 + (i * 48));
+            sidebar.Controls.Add(btn);
+        }
+
+        return sidebar;
+    }
+
+    private Button CreateSidebarButton(string pageName, int top)
+    {
+        var btn = new Button
+        {
+            Text = "      " + pageName,
+            Left = 12,
+            Top = top,
+            Width = 200,
+            Height = 42,
+            FlatStyle = FlatStyle.Flat,
+            Font = navFont,
+            TextAlign = ContentAlignment.MiddleLeft,
+            BackColor = Color.Transparent,
+            ForeColor = pageName == "Dashboard" ? Color.White : mutedInk,
+            Cursor = Cursors.Hand
+        };
+        btn.FlatAppearance.BorderSize = 0;
+        btn.FlatAppearance.MouseOverBackColor = Color.FromArgb(20, 32, 52);
+        btn.Paint += (_, e) =>
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            bool isSelected = string.Equals(activeNavPage, pageName, StringComparison.OrdinalIgnoreCase);
+            if (isSelected)
+            {
+                using var path = RoundedRect(new Rectangle(0, 0, btn.Width - 1, btn.Height - 1), 8);
+                using var grad = new LinearGradientBrush(btn.ClientRectangle,
+                    Color.FromArgb(11, 88, 168), Color.FromArgb(11, 61, 120), LinearGradientMode.Horizontal);
+                g.FillPath(grad, path);
+                using var accentBrush = new SolidBrush(Color.FromArgb(56, 189, 248));
+                g.FillRectangle(accentBrush, 0, 7, 4, btn.Height - 14);
+            }
+
+            DrawNavIcon(g, pageName, new Rectangle(14, 12, 18, 18), isSelected ? Color.White : mutedInk);
+            TextRenderer.DrawText(g, pageName, navFont, new Rectangle(42, 0, btn.Width - 46, btn.Height),
