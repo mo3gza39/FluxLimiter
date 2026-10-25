@@ -44,6 +44,12 @@ public sealed class MainForm : Form
 
     private double currentDownKBps;
     private double currentUpKBps;
+    private readonly string dailyUsagePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FluxLimiter", "daily-usage.json");
+    private DateTime usageDate = DateTime.Now.Date;
+    private long todayReceivedBytes, todaySentBytes, monthReceivedBytes, monthSentBytes;
+    private long pendingReceivedBytes, pendingSentBytes;
+    private int dailyUsageFlushCounter;
+    private FormWindowState lastWindowState = FormWindowState.Normal;
     private readonly List<float> downSparkHistory = new() { 8f, 12f, 10f, 18f, 15f, 24f, 21f, 30f, 26f };
     private readonly List<float> upSparkHistory = new() { 2f, 3f, 2.5f, 4f, 3.5f, 5f, 4.2f, 6f, 5.2f };
     private List<(string Name, Image? Icon, long Bytes)> topAppsToday = new();
@@ -117,7 +123,7 @@ public sealed class MainForm : Form
         searchDebounce.Tick += (_, _) => { searchDebounce.Stop(); QueueReload(); };
         refresh.Tick += (_, _) =>
         {
-            if (!grid.IsCurrentCellInEditMode && grid.ContextMenuStrip?.Visible != true)
+            if (Visible && WindowState != FormWindowState.Minimized && !grid.IsCurrentCellInEditMode && grid.ContextMenuStrip?.Visible != true)
                 QueueReload();
         };
         refresh.Start();
@@ -125,10 +131,17 @@ public sealed class MainForm : Form
         speedTimer.Tick += (_, _) => OnSpeedTimerTick();
         speedTimer.Start();
 
+        Resize += (_, _) =>
+        {
+            if (WindowState == lastWindowState) return;
+            lastWindowState = WindowState;
+            if (Visible && WindowState != FormWindowState.Minimized) QueueReload();
+        };
         FormClosing += OnMainFormClosing;
         FormClosed += OnMainFormClosed;
 
-        _ = traffic.StartAsync();\n        LoadPersistedUsage();
+        _ = traffic.StartAsync();
+        LoadPersistedUsage();
 
         if (!string.IsNullOrWhiteSpace(SettingsStore.LastLoadWarning))
             settingsSaveDisabled = SettingsStore.LastLoadWarning.Contains("Saving is disabled", StringComparison.OrdinalIgnoreCase);
@@ -179,6 +192,9 @@ public sealed class MainForm : Form
         var unitToggle = new ToolStripMenuItem("Display Speeds in Mbps / Kbps") { Checked = true, CheckOnClick = true };
         unitToggle.CheckedChanged += (_, _) => taskbarOverlay.UseBitsPerSecond = unitToggle.Checked;
         menu.Items.Add(unitToggle);
+        var closeToTray = new ToolStripMenuItem("Close button hides to tray") { Checked = settings.CloseToTray, CheckOnClick = true };
+        closeToTray.CheckedChanged += (_, _) => { settings.CloseToTray = closeToTray.Checked; TrySaveSettings(); };
+        menu.Items.Add(closeToTray);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit FluxLimiter", null, (_, _) =>
         {
@@ -607,14 +623,40 @@ public sealed class MainForm : Form
             networkStateLabel.ForeColor = network.IsConnected ? accentGreen : Color.FromArgb(244, 63, 94);
             downSparkHistory.Add((float)currentDownKBps); if (downSparkHistory.Count > 12) downSparkHistory.RemoveAt(0);
             upSparkHistory.Add((float)currentUpKBps); if (upSparkHistory.Count > 12) upSparkHistory.RemoveAt(0);
-            taskbarOverlay.UpdateSpeeds(currentDownKBps, currentUpKBps);\n            AccumulateDeviceUsage(network.LastReceivedDeltaBytes, network.LastSentDeltaBytes);
+            taskbarOverlay.UpdateSpeeds(currentDownKBps, currentUpKBps);
+            AccumulateDeviceUsage(network.LastReceivedDeltaBytes, network.LastSentDeltaBytes);
         }
         catch (Exception ex) when (ex is System.Net.NetworkInformation.NetworkInformationException or InvalidOperationException) { currentDownKBps = 0; currentUpKBps = 0; }
         downloadCard?.Invalidate(); uploadCard?.Invalidate(); dailyCard?.Invalidate(); monthlyCard?.Invalidate();
         status.Text = traffic.Status + " · Right-click an app or click Action icons (⏸ / 🛡 / ⋮)";
     }
 
-    private void LoadPersistedUsage()\n    {\n        usageDate = DateTime.Now.Date;\n        (todayReceivedBytes, todaySentBytes) = DailyUsageStore.Load(dailyUsagePath, usageDate);\n        (monthReceivedBytes, monthSentBytes) = DailyUsageStore.LoadMonth(dailyUsagePath, usageDate);\n    }\n\n    private void AccumulateDeviceUsage(long received, long sent)\n    {\n        var today = DateTime.Now.Date;\n        if (today != usageDate) { usageDate = today; LoadPersistedUsage(); }\n        received = Math.Max(0, received); sent = Math.Max(0, sent);\n        todayReceivedBytes += received; todaySentBytes += sent;\n        monthReceivedBytes += received; monthSentBytes += sent;\n        if (++dailyUsageFlushCounter >= 60) { dailyUsageFlushCounter = 0; DailyUsageStore.Add(dailyUsagePath, usageDate, received, sent); }\n    }\n\n    private static string FormatCardSpeed(double kbpsBytes)
+    private void LoadPersistedUsage()
+    {
+        usageDate = DateTime.Now.Date;
+        (todayReceivedBytes, todaySentBytes) = DailyUsageStore.Load(dailyUsagePath, usageDate);
+        (monthReceivedBytes, monthSentBytes) = DailyUsageStore.LoadMonth(dailyUsagePath, usageDate);
+        pendingReceivedBytes = pendingSentBytes = 0;
+    }
+
+    private void AccumulateDeviceUsage(long received, long sent)
+    {
+        var today = DateTime.Now.Date;
+        if (today != usageDate) { FlushPendingUsage(); usageDate = today; LoadPersistedUsage(); }
+        received = Math.Max(0, received); sent = Math.Max(0, sent);
+        todayReceivedBytes += received; todaySentBytes += sent;
+        monthReceivedBytes += received; monthSentBytes += sent;
+        pendingReceivedBytes += received; pendingSentBytes += sent;
+        if (++dailyUsageFlushCounter >= 60) FlushPendingUsage();
+    }
+
+    private void FlushPendingUsage()
+    {
+        if (pendingReceivedBytes != 0 || pendingSentBytes != 0) DailyUsageStore.Add(dailyUsagePath, usageDate, pendingReceivedBytes, pendingSentBytes);
+        pendingReceivedBytes = pendingSentBytes = 0; dailyUsageFlushCounter = 0;
+    }
+
+    private static string FormatCardSpeed(double kbpsBytes)
     {
         double mbpsBits = (kbpsBytes * 8.0) / 1000.0;
         if (mbpsBits >= 1.0) return mbpsBits.ToString("F1", CultureInfo.InvariantCulture) + " Mbps";
@@ -969,12 +1011,25 @@ public sealed class MainForm : Form
 
     private void OnMainFormClosing(object? sender, FormClosingEventArgs e)
     {
-        if (e.CloseReason == CloseReason.UserClosing && !exitingApplication && settings.CloseToTray)\n        {\n            e.Cancel = true; Hide();\n            if (!settings.TrayNoticeShown)\n            {\n                trayIcon.BalloonTipTitle = "FluxLimiter";\n                trayIcon.BalloonTipText = "FluxLimiter is still running in the tray.";\n                trayIcon.ShowBalloonTip(3000);\n                settings.TrayNoticeShown = true;\n                TrySaveSettings();\n            }\n            return;\n        }
+        if (e.CloseReason == CloseReason.UserClosing && !exitingApplication && settings.CloseToTray)
+        {
+            e.Cancel = true; Hide();
+            if (!settings.TrayNoticeShown)
+            {
+                trayIcon.BalloonTipTitle = "FluxLimiter";
+                trayIcon.BalloonTipText = "FluxLimiter is still running in the tray.";
+                trayIcon.ShowBalloonTip(3000);
+                settings.TrayNoticeShown = true;
+                TrySaveSettings();
+            }
+            return;
+        }
     }
 
     private void OnMainFormClosed(object? sender, FormClosedEventArgs e)
     {
-        DailyUsageStore.Add(dailyUsagePath, usageDate, 0, 0);\n        refresh.Dispose(); searchDebounce.Dispose(); speedTimer.Dispose(); trayIcon.Visible = false; trayIcon.Dispose(); trayMenu.Dispose(); taskbarOverlay.Dispose(); traffic.Dispose();
+        FlushPendingUsage();
+        refresh.Dispose(); searchDebounce.Dispose(); speedTimer.Dispose(); trayIcon.Visible = false; trayIcon.Dispose(); trayMenu.Dispose(); taskbarOverlay.Dispose(); traffic.Dispose();
         titleFont.Dispose(); subtitleFont.Dispose(); sectionFont.Dispose(); cardLabelFont.Dispose(); cardValueFont.Dispose(); smallFont.Dispose(); navFont.Dispose();
         lock (iconCache) { foreach (var img in iconCache.Values) img?.Dispose(); iconCache.Clear(); }
     }
