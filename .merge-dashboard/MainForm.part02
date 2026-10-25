@@ -1,0 +1,139 @@
+                float maxVal = Math.Max(10f, history.Max() * 1.15f);
+                PointF[] pts = new PointF[history.Count];
+                for (int i = 0; i < history.Count; i++)
+                {
+                    float x = sparkBounds.Left + (i / (float)(history.Count - 1)) * sparkBounds.Width;
+                    float y = sparkBounds.Bottom - (Math.Clamp(history[i] / maxVal, 0.05f, 1f) * sparkBounds.Height);
+                    pts[i] = new PointF(x, y);
+                }
+
+                using var areaPath = new GraphicsPath();
+                areaPath.AddCurve(pts, 0.35f);
+                areaPath.AddLine(pts[^1].X, sparkBounds.Bottom, pts[0].X, sparkBounds.Bottom);
+                areaPath.CloseFigure();
+
+                using var areaGrad = new LinearGradientBrush(sparkBounds,
+                    Color.FromArgb(95, accent), Color.FromArgb(0, accent), LinearGradientMode.Vertical);
+                g.FillPath(areaGrad, areaPath);
+
+                using var linePen = new Pen(accent, 2f);
+                g.DrawCurve(linePen, pts, 0.35f);
+            }
+        };
+        return card;
+    }
+
+    private Panel CreateDailyUsageCard()
+    {
+        var card = CreateRoundedCardPanel();
+        card.Paint += (_, e) =>
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var badgePath = RoundedRect(new Rectangle(16, 22, 42, 42), 9))
+            using (var badgeBrush = new SolidBrush(Color.FromArgb(28, 27, 58))) { g.FillPath(badgeBrush, badgePath); }
+            using (var dbPen = new Pen(Color.FromArgb(139, 120, 255), 1.8f))
+            {
+                g.DrawEllipse(dbPen, 28, 30, 18, 6); g.DrawLine(dbPen, 28, 33, 28, 50); g.DrawLine(dbPen, 46, 33, 46, 50); g.DrawArc(dbPen, 28, 47, 18, 6, 0, 180);
+            }
+            var (rx, tx) = traffic.SessionTotals; long total = rx + tx;
+            TextRenderer.DrawText(g, "Daily Usage", cardLabelFont, new Point(68, 16), mutedInk);
+            TextRenderer.DrawText(g, FormatBytes(total), cardValueFont, new Point(66, 34), Color.White);
+            string sub = $"↓ {FormatBytes(rx)}   ↑ {FormatBytes(tx)}"; TextRenderer.DrawText(g, sub, smallFont, new Point(68, 65), mutedInk);
+        };
+        return card;
+    }
+
+    private Panel CreateMonthlyUsageCard()
+    {
+        var card = CreateRoundedCardPanel(); card.Margin = new Padding(0);
+        card.Paint += (_, e) =>
+        {
+            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var badgePath = RoundedRect(new Rectangle(16, 22, 42, 42), 9))
+            using (var badgeBrush = new SolidBrush(Color.FromArgb(22, 35, 54))) { g.FillPath(badgeBrush, badgePath); }
+            using (var calPen = new Pen(Color.FromArgb(148, 163, 184), 1.8f))
+            { g.DrawRectangle(calPen, 28, 32, 18, 18); g.DrawLine(calPen, 28, 38, 46, 38); g.DrawLine(calPen, 33, 29, 33, 34); g.DrawLine(calPen, 41, 29, 41, 34); }
+            var (rx, tx) = traffic.SessionTotals; double totalGb = (rx + tx) / (1024d * 1024d * 1024d); double quotaGb = 200.0;
+            int pct = (int)Math.Clamp(Math.Round((totalGb / quotaGb) * 100.0), 1, 100);
+            TextRenderer.DrawText(g, "Monthly Usage", cardLabelFont, new Point(68, 16), mutedInk);
+            TextRenderer.DrawText(g, $"{FormatBytes(rx + tx)} / 200 GB", new Font("Segoe UI", 13.5f, FontStyle.Bold), new Point(66, 35), Color.White);
+            int barWidth = Math.Max(60, card.Width - 125); Rectangle trackRect = new(68, 67, barWidth, 7);
+            using (var trackBrush = new SolidBrush(Color.FromArgb(27, 41, 62))) g.FillRectangle(trackBrush, trackRect);
+            int fillWidth = Math.Max(6, (int)(barWidth * (pct / 100.0)));
+            using (var fillBrush = new SolidBrush(accentGreen)) g.FillRectangle(fillBrush, new Rectangle(68, 67, fillWidth, 7));
+            TextRenderer.DrawText(g, pct.ToString(CultureInfo.InvariantCulture) + "%", smallFont, new Point(74 + barWidth, 62), mutedInk);
+        };
+        return card;
+    }
+
+    private Panel CreateTopAppsPanel()
+    {
+        var panel = CreateRoundedCardPanel();
+        panel.Paint += (_, e) =>
+        {
+            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
+            TextRenderer.DrawText(g, "Top Applications (Today)", sectionFont, new Point(16, 14), Color.White);
+            TextRenderer.DrawText(g, "See All →", smallFont, new Point(panel.Width - 78, 16), mutedInk);
+            if (topAppsToday.Count == 0) { TextRenderer.DrawText(g, "Collecting per-application traffic...", smallFont, new Point(18, 90), mutedInk); return; }
+            long maxBytes = Math.Max(1024 * 1024, topAppsToday.Max(x => x.Bytes)); int startY = 48;
+            for (int i = 0; i < Math.Min(5, topAppsToday.Count); i++)
+            {
+                var item = topAppsToday[i]; int y = startY + (i * 31);
+                if (item.Icon is not null) g.DrawImage(item.Icon, new Rectangle(18, y, 18, 18));
+                TextRenderer.DrawText(g, item.Name, smallFont, new Rectangle(44, y - 1, 130, 20), Color.White, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+                int barLeft = 180; int barWidth = Math.Max(60, panel.Width - 265); Rectangle track = new(barLeft, y + 4, barWidth, 9);
+                using (var trackBrush = new SolidBrush(Color.FromArgb(25, 37, 58))) g.FillRectangle(trackBrush, track);
+                int fillW = Math.Max(8, (int)(barWidth * Math.Clamp((double)item.Bytes / maxBytes, 0.06, 1.0)));
+                using (var fillBrush = new SolidBrush(i == 0 ? accentGreen : accentBlue)) g.FillRectangle(fillBrush, new Rectangle(barLeft, y + 4, fillW, 9));
+                TextRenderer.DrawText(g, FormatBytes(item.Bytes), smallFont, new Rectangle(barLeft + barWidth + 8, y - 1, 68, 20), Color.White, TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
+            }
+        };
+        return panel;
+    }
+
+    private Panel CreateSevenDayChartPanel()
+    {
+        var panel = CreateRoundedCardPanel(); panel.Margin = new Padding(0);
+        panel.Paint += (_, e) =>
+        {
+            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
+            TextRenderer.DrawText(g, "Daily Usage (Last 7 Days)", sectionFont, new Point(16, 14), Color.White);
+            using (var dlBrush = new SolidBrush(accentGreen)) g.FillRectangle(dlBrush, panel.Width - 175, 18, 10, 10);
+            TextRenderer.DrawText(g, "Download", smallFont, new Point(panel.Width - 160, 15), mutedInk);
+            using (var ulBrush = new SolidBrush(accentBlue)) g.FillRectangle(ulBrush, panel.Width - 85, 18, 10, 10);
+            TextRenderer.DrawText(g, "Upload", smallFont, new Point(panel.Width - 70, 15), mutedInk);
+            int chartLeft = 56, chartTop = 50, chartBottom = panel.Height - 32; int chartHeight = Math.Max(60, chartBottom - chartTop); int chartWidth = Math.Max(160, panel.Width - chartLeft - 24);
+            string[] yLabels = { "6 GB", "4 GB", "2 GB", "0" }; using var gridPen = new Pen(Color.FromArgb(25, 38, 59), 1f);
+            for (int i = 0; i < yLabels.Length; i++) { int y = chartTop + (int)(i / (float)(yLabels.Length - 1) * chartHeight); g.DrawLine(gridPen, chartLeft, y, chartLeft + chartWidth, y); TextRenderer.DrawText(g, yLabels[i], smallFont, new Rectangle(8, y - 8, 42, 16), mutedInk, TextFormatFlags.Right); }
+            float[] dlRatios = { 0.36f, 0.27f, 0.34f, 0.66f, 0.48f, 0.34f, 0.38f }; float[] ulRatios = { 0.16f, 0.13f, 0.16f, 0.18f, 0.17f, 0.16f, 0.17f }; int colWidth = chartWidth / 7;
+            for (int i = 0; i < 7; i++)
+            {
+                var day = DateTime.Now.AddDays(-6 + i); int cx = chartLeft + (i * colWidth) + (colWidth / 2); int barW = 24; int dlH = (int)(chartHeight * dlRatios[i]); int ulH = (int)(chartHeight * ulRatios[i]);
+                using (var dlBrush = new SolidBrush(accentGreen)) g.FillRectangle(dlBrush, cx - (barW / 2), chartBottom - dlH, barW, dlH);
+                using (var ulBrush = new SolidBrush(accentBlue)) g.FillRectangle(ulBrush, cx - (barW / 2), chartBottom - dlH - ulH, barW, ulH);
+                TextRenderer.DrawText(g, day.ToString("MMM dd", CultureInfo.InvariantCulture), smallFont, new Rectangle(cx - 28, chartBottom + 4, 56, 18), mutedInk, TextFormatFlags.HorizontalCenter);
+            }
+        };
+        return panel;
+    }
+
+    private void ConfigureGrid()
+    {
+        grid.BackgroundColor = cardBg; grid.GridColor = Color.FromArgb(23, 35, 54); grid.BorderStyle = BorderStyle.None; grid.RowHeadersVisible = false;
+        grid.AllowUserToAddRows = false; grid.AllowUserToDeleteRows = false; grid.AllowUserToResizeRows = false; grid.AllowUserToOrderColumns = false;
+        grid.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.None; grid.ScrollBars = ScrollBars.Vertical; grid.ReadOnly = false; grid.MultiSelect = false;
+        grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect; grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None; grid.RowTemplate.Height = 38; grid.ColumnHeadersHeight = 36;
+        grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing; grid.CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal;
+        grid.DefaultCellStyle.Padding = new Padding(6, 0, 6, 0); grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(15, 24, 40);
+        grid.EnableHeadersVisualStyles = false; grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(14, 22, 38); grid.ColumnHeadersDefaultCellStyle.ForeColor = mutedInk;
+        grid.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI Semibold", 9f); grid.DefaultCellStyle.BackColor = cardBg; grid.DefaultCellStyle.ForeColor = ink;
+        grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(20, 48, 82); grid.DefaultCellStyle.SelectionForeColor = Color.White;
+        grid.Columns.Add(new DataGridViewImageColumn { Name = "icon", HeaderText = "", Width = 34, ImageLayout = DataGridViewImageCellLayout.Zoom, ReadOnly = true, DefaultCellStyle = new DataGridViewCellStyle { NullValue = null } });
+        grid.Columns.Add("app", "Application ⇅"); grid.Columns.Add("status", "Status"); grid.Columns.Add("download", "Download ↓"); grid.Columns.Add("upload", "Upload ↑"); grid.Columns.Add("total", "Total");
+        grid.Columns.Add("down", "Limit Download"); grid.Columns.Add("up", "Limit Upload"); grid.Columns.Add("rule", "Rule"); grid.Columns.Add("action", "Action"); grid.Columns.Add("pid", "PID"); grid.Columns.Add("path", "Executable");
+        grid.Columns["pid"].Visible = false; grid.Columns["path"].Visible = false; grid.Columns["app"].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill; grid.Columns["app"].MinimumWidth = 180;
+        grid.Columns["status"].Width = 90; grid.Columns["download"].Width = 104; grid.Columns["upload"].Width = 96; grid.Columns["total"].Width = 90; grid.Columns["down"].Width = 124; grid.Columns["up"].Width = 124; grid.Columns["rule"].Width = 76; grid.Columns["action"].Width = 106;
+        foreach (DataGridViewColumn column in grid.Columns) column.ReadOnly = true; grid.Columns["down"].ReadOnly = false; grid.Columns["up"].ReadOnly = false;
+        grid.CellEndEdit += (_, e) =>
+        {
