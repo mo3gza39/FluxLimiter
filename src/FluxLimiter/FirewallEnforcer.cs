@@ -32,7 +32,7 @@ public static class FirewallEnforcer
 
             var existing = new HashSet<string>(StringComparer.Ordinal);
             var obsolete = new List<string>();
-            foreach (object item in (IEnumerable)policy.Rules)
+            foreach (object item in (IEnumerable)rulesCollection
             {
                 dynamic rule = item;
                 try
@@ -47,21 +47,21 @@ public static class FirewallEnforcer
 
             foreach (string name in obsolete)
             {
-                try { policy.Rules.Remove(name); }
+                try { rulesCollection.Remove(name); }
                 catch (COMException) { }
             }
 
             foreach (var entry in expected.Values)
                 if (!existing.Contains(entry.Name))
-                    AddRule(policy, ruleType, entry.Path, entry.Direction, entry.Suffix);
+                    AddRule(rulesCollection, ruleType, entry.Path, entry.Direction, entry.Suffix);
         }
-        finally { Marshal.FinalReleaseComObject(policy); }
+        finally\n        {\n            if (rulesCollection is not null && Marshal.IsComObject(rulesCollection)) Marshal.FinalReleaseComObject(rulesCollection);\n            if (Marshal.IsComObject(policy)) Marshal.FinalReleaseComObject(policy);\n        }
     }
 
     private static ExpectedRule Expected(string path, int direction, string suffix) =>
         new(Prefix + StableId(path) + " " + suffix, path, direction, suffix);
 
-    private static void AddRule(dynamic policy, Type ruleType, string path, int direction, string suffix)
+    private static void AddRule(dynamic rulesCollection, Type ruleType, string path, int direction, string suffix)
     {
         dynamic rule = Activator.CreateInstance(ruleType)
             ?? throw new InvalidOperationException("Unable to create Windows Firewall rule.");
@@ -75,7 +75,7 @@ public static class FirewallEnforcer
             rule.Enabled = true;
             rule.Profiles = AllProfiles;
             rule.InterfaceTypes = "All";
-            policy.Rules.Add(rule);
+            rulesCollection.Add(rule);
         }
         finally { Marshal.FinalReleaseComObject(rule); }
     }
