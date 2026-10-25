@@ -1,0 +1,128 @@
+                isSelected ? Color.White : mutedInk, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+        };
+        btn.Click += (_, _) => NavigateTo(pageName);
+        navButtons[pageName] = btn;
+        return btn;
+    }
+
+    private static void DrawNavIcon(Graphics g, string item, Rectangle bounds, Color color)
+    {
+        using var pen = new Pen(color, 1.7f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        switch (item)
+        {
+            case "Dashboard":
+                Point[] roof = { new(bounds.Left + 1, bounds.Top + 8), new(bounds.Left + 9, bounds.Top + 1), new(bounds.Right - 1, bounds.Top + 8) };
+                g.DrawLines(pen, roof);
+                g.DrawRectangle(pen, bounds.Left + 3, bounds.Top + 8, 12, 9);
+                break;
+            case "Applications":
+                g.DrawRectangle(pen, bounds.Left + 1, bounds.Top + 2, 16, 14);
+                g.DrawLine(pen, bounds.Left + 1, bounds.Top + 7, bounds.Right - 1, bounds.Top + 7);
+                g.DrawLine(pen, bounds.Left + 7, bounds.Top + 7, bounds.Left + 7, bounds.Bottom - 2);
+                break;
+            case "Rules":
+                Point[] shield = { new(bounds.Left + 9, bounds.Top + 1), new(bounds.Right - 2, bounds.Top + 4), new(bounds.Right - 3, bounds.Top + 11), new(bounds.Left + 9, bounds.Bottom - 1), new(bounds.Left + 3, bounds.Top + 11), new(bounds.Left + 2, bounds.Top + 4) };
+                g.DrawPolygon(pen, shield); break;
+            case "Monthly Usage":
+            case "Statistics":
+                g.DrawLine(pen, bounds.Left + 2, bounds.Bottom - 2, bounds.Right - 2, bounds.Bottom - 2);
+                g.DrawLine(pen, bounds.Left + 5, bounds.Bottom - 2, bounds.Left + 5, bounds.Top + 9);
+                g.DrawLine(pen, bounds.Left + 9, bounds.Bottom - 2, bounds.Left + 9, bounds.Top + 4);
+                g.DrawLine(pen, bounds.Left + 13, bounds.Bottom - 2, bounds.Left + 13, bounds.Top + 7); break;
+            case "Settings":
+                g.DrawEllipse(pen, bounds.Left + 3, bounds.Top + 3, 12, 12); g.DrawEllipse(pen, bounds.Left + 7, bounds.Top + 7, 4, 4); break;
+            case "About":
+                g.DrawEllipse(pen, bounds.Left + 1, bounds.Top + 1, 16, 16); g.DrawLine(pen, bounds.Left + 9, bounds.Top + 8, bounds.Left + 9, bounds.Bottom - 4);
+                g.FillEllipse(new SolidBrush(color), bounds.Left + 8, bounds.Top + 4, 2, 2); break;
+        }
+    }
+
+    private Panel BuildDashboardSurface()
+    {
+        var dashboard = new Panel { Dock = DockStyle.Fill, BackColor = bg, Padding = new Padding(24, 18, 24, 18) };
+        var rootLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, BackColor = bg };
+        rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 74));
+        rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 108));
+        rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 218));
+        rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+
+        var headerRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = bg, Margin = new Padding(0) };
+        headerRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        headerRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 248));
+        var titleStack = new Panel { Dock = DockStyle.Fill, BackColor = bg };
+        titleStack.Controls.Add(new Label { Text = "Dashboard", Font = titleFont, ForeColor = Color.White, AutoSize = true, Left = 0, Top = 0 });
+        titleStack.Controls.Add(new Label { Text = "Overview of your network usage and active applications", Font = subtitleFont, ForeColor = mutedInk, AutoSize = true, Left = 2, Top = 42 });
+
+        var netCard = CreateRoundedCardPanel();
+        netCard.Padding = new Padding(12, 8, 12, 8);
+        netCard.Paint += (_, e) =>
+        {
+            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
+            using var circleBrush = new SolidBrush(Color.FromArgb(13, 46, 40)); g.FillEllipse(circleBrush, 14, 13, 36, 36);
+            using var wifiPen = new Pen(accentGreen, 2f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            g.DrawArc(wifiPen, 20, 19, 24, 24, 225, 90); g.DrawArc(wifiPen, 24, 24, 16, 16, 225, 90);
+            using var dotBrush = new SolidBrush(accentGreen); g.FillEllipse(dotBrush, 30, 34, 4, 4);
+        };
+        var netTitle = new Label { Text = "Network", Font = smallFont, ForeColor = mutedInk, Left = 60, Top = 8, AutoSize = true, BackColor = Color.Transparent };
+        networkAdapterLabel.Text = "Wi-Fi Connected"; networkAdapterLabel.Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold); networkAdapterLabel.ForeColor = Color.White;
+        networkAdapterLabel.Left = 60; networkAdapterLabel.Top = 23; networkAdapterLabel.Width = 165; networkAdapterLabel.Height = 19; networkAdapterLabel.BackColor = Color.Transparent;
+        networkStateLabel.Text = "Connected"; networkStateLabel.Font = smallFont; networkStateLabel.ForeColor = accentGreen; networkStateLabel.Left = 60; networkStateLabel.Top = 42; networkStateLabel.AutoSize = true; networkStateLabel.BackColor = Color.Transparent;
+        netCard.Controls.Add(netTitle); netCard.Controls.Add(networkAdapterLabel); netCard.Controls.Add(networkStateLabel);
+        headerRow.Controls.Add(titleStack, 0, 0); headerRow.Controls.Add(netCard, 1, 0);
+
+        var kpiRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 1, BackColor = bg, Margin = new Padding(0, 4, 0, 8) };
+        for (int i = 0; i < 4; i++) kpiRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25f));
+        downloadCard = CreateSparklineCard(true); uploadCard = CreateSparklineCard(false); dailyCard = CreateDailyUsageCard(); monthlyCard = CreateMonthlyUsageCard();
+        kpiRow.Controls.Add(downloadCard, 0, 0); kpiRow.Controls.Add(uploadCard, 1, 0); kpiRow.Controls.Add(dailyCard, 2, 0); kpiRow.Controls.Add(monthlyCard, 3, 0);
+
+        var chartsRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = bg, Margin = new Padding(0, 0, 0, 10) };
+        chartsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44f)); chartsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 56f));
+        topAppsPanel = CreateTopAppsPanel(); sevenDayChartPanel = CreateSevenDayChartPanel();
+        chartsRow.Controls.Add(topAppsPanel, 0, 0); chartsRow.Controls.Add(sevenDayChartPanel, 1, 0);
+
+        var activeCard = CreateRoundedCardPanel(); activeCard.Margin = new Padding(0); activeCard.Padding = new Padding(16, 12, 16, 12);
+        var activeHeader = new TableLayoutPanel { Dock = DockStyle.Top, Height = 42, ColumnCount = 3, RowCount = 1, BackColor = Color.Transparent };
+        activeHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f)); activeHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 240f)); activeHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 165f));
+        var activeTitle = new Label { Text = "Active Applications", Dock = DockStyle.Fill, Font = sectionFont, ForeColor = Color.White, TextAlign = ContentAlignment.MiddleLeft };
+
+        search.Dock = DockStyle.Fill; search.Margin = new Padding(0, 6, 10, 6); search.BackColor = Color.FromArgb(13, 21, 36); search.ForeColor = Color.White;
+        search.BorderStyle = BorderStyle.FixedSingle; search.PlaceholderText = "Search applications..."; search.TextChanged += (_, _) => { searchDebounce.Stop(); searchDebounce.Start(); };
+        filter.Dock = DockStyle.Fill; filter.Margin = new Padding(0, 6, 0, 6); filter.DropDownStyle = ComboBoxStyle.DropDownList; filter.BackColor = Color.FromArgb(22, 34, 54); filter.ForeColor = Color.White; filter.FlatStyle = FlatStyle.Flat;
+        filter.Items.AddRange(new object[] { "All Connections", "User Processes", "System Processes", "Limited / Blocked" }); filter.SelectedIndex = 0; filter.SelectedIndexChanged += (_, _) => QueueReload();
+        activeHeader.Controls.Add(activeTitle, 0, 0); activeHeader.Controls.Add(search, 1, 0); activeHeader.Controls.Add(filter, 2, 0);
+        grid.Dock = DockStyle.Fill; activeCard.Controls.Add(grid); activeCard.Controls.Add(activeHeader); grid.BringToFront();
+
+        status.Dock = DockStyle.Fill; status.Font = smallFont; status.ForeColor = mutedInk; status.TextAlign = ContentAlignment.MiddleLeft;
+        status.Text = "ETW starting... · Taskbar speed widget active next to Windows clock";
+        rootLayout.Controls.Add(headerRow, 0, 0); rootLayout.Controls.Add(kpiRow, 0, 1); rootLayout.Controls.Add(chartsRow, 0, 2); rootLayout.Controls.Add(activeCard, 0, 3); rootLayout.Controls.Add(status, 0, 4);
+        dashboard.Controls.Add(rootLayout); return dashboard;
+    }
+
+    private Panel CreateRoundedCardPanel()
+    {
+        var panel = new Panel { Dock = DockStyle.Fill, BackColor = cardBg, Margin = new Padding(0, 0, 12, 0) };
+        panel.Paint += (_, e) => { e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; using var borderPen = new Pen(cardBorder, 1f); using var rectPath = RoundedRect(new Rectangle(0, 0, panel.Width - 1, panel.Height - 1), 10); e.Graphics.DrawPath(borderPen, rectPath); };
+        return panel;
+    }
+
+    private Panel CreateSparklineCard(bool isDownload)
+    {
+        var card = CreateRoundedCardPanel();
+        card.Paint += (_, e) =>
+        {
+            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
+            Color badgeBg = isDownload ? Color.FromArgb(13, 46, 40) : Color.FromArgb(14, 36, 64); Color accent = isDownload ? accentGreen : accentBlue;
+            using (var badgePath = RoundedRect(new Rectangle(16, 22, 42, 42), 9)) using (var badgeBrush = new SolidBrush(badgeBg)) g.FillPath(badgeBrush, badgePath);
+            using (var arrowPen = new Pen(accent, 2.2f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                int cx = 37;
+                if (isDownload) { g.DrawLine(arrowPen, cx, 32, cx, 52); g.DrawLine(arrowPen, cx - 6, 46, cx, 52); g.DrawLine(arrowPen, cx + 6, 46, cx, 52); }
+                else { g.DrawLine(arrowPen, cx, 52, cx, 32); g.DrawLine(arrowPen, cx - 6, 38, cx, 32); g.DrawLine(arrowPen, cx + 6, 38, cx, 32); }
+            }
+            string label = isDownload ? "Download" : "Upload"; double kbps = isDownload ? currentDownKBps : currentUpKBps; string valueText = FormatCardSpeed(kbps);
+            TextRenderer.DrawText(g, label, cardLabelFont, new Point(68, 22), mutedInk); TextRenderer.DrawText(g, valueText, cardValueFont, new Point(66, 41), Color.White);
+            var history = isDownload ? downSparkHistory : upSparkHistory;
+            if (history.Count >= 2 && card.Width > 190)
+            {
+                Rectangle sparkBounds = new(card.Width - 115, 44, 100, 38);
