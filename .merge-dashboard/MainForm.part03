@@ -1,0 +1,140 @@
+            if (e.RowIndex >= 0 && (e.ColumnIndex == grid.Columns["down"].Index || e.ColumnIndex == grid.Columns["up"].Index))
+                SaveInlineRule(e.RowIndex);
+        };
+        grid.CellDoubleClick += (_, e) =>
+        {
+            if (e.RowIndex >= 0 && e.ColumnIndex != grid.Columns["action"].Index)
+                EditRule(e.RowIndex);
+        };
+        grid.CellPainting += OnGridCellPainting;
+        grid.CellMouseClick += OnGridCellMouseClick;
+    }
+
+    private void OnGridCellPainting(object? sender, DataGridViewCellPaintingEventArgs e)
+    {
+        if (e.RowIndex < 0) return;
+        if (e.ColumnIndex == grid.Columns["down"].Index || e.ColumnIndex == grid.Columns["up"].Index)
+        {
+            e.PaintBackground(e.CellBounds, true);
+            var g = e.Graphics!; g.SmoothingMode = SmoothingMode.AntiAlias;
+            Rectangle box = new(e.CellBounds.Left + 6, e.CellBounds.Top + 6, e.CellBounds.Width - 12, e.CellBounds.Height - 12);
+            using var boxPath = RoundedRect(box, 6); using var boxBrush = new SolidBrush(Color.FromArgb(22, 34, 54)); using var boxPen = new Pen(Color.FromArgb(37, 53, 79), 1f);
+            g.FillPath(boxBrush, boxPath); g.DrawPath(boxPen, boxPath);
+            string text = e.FormattedValue?.ToString() ?? "Unlimited";
+            TextRenderer.DrawText(g, text, smallFont, new Rectangle(box.Left + 8, box.Top, box.Width - 24, box.Height), Color.White, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+            TextRenderer.DrawText(g, "⌄", smallFont, new Rectangle(box.Right - 18, box.Top - 2, 14, box.Height), mutedInk, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            e.Handled = true; return;
+        }
+        if (e.ColumnIndex == grid.Columns["action"].Index)
+        {
+            e.PaintBackground(e.CellBounds, true); var g = e.Graphics!; g.SmoothingMode = SmoothingMode.AntiAlias;
+            bool isBlocked = string.Equals(grid.Rows[e.RowIndex].Cells["status"].Value?.ToString(), "● Blocked", StringComparison.OrdinalIgnoreCase);
+            int cy = e.CellBounds.Top + (e.CellBounds.Height / 2); int startX = e.CellBounds.Left + 12;
+            Rectangle pauseRect = new(startX, cy - 11, 22, 22);
+            using (var pen = new Pen(mutedInk, 1.4f)) { g.DrawEllipse(pen, pauseRect); g.DrawLine(pen, pauseRect.Left + 8, pauseRect.Top + 6, pauseRect.Left + 8, pauseRect.Bottom - 6); g.DrawLine(pen, pauseRect.Left + 14, pauseRect.Top + 6, pauseRect.Left + 14, pauseRect.Bottom - 6); }
+            Rectangle shieldRect = new(startX + 32, cy - 11, 22, 22); Color shieldColor = isBlocked ? Color.FromArgb(244, 63, 94) : mutedInk;
+            using (var shieldPen = new Pen(shieldColor, 1.6f))
+            {
+                Point[] pts = { new(shieldRect.Left + 11, shieldRect.Top + 3), new(shieldRect.Right - 4, shieldRect.Top + 6), new(shieldRect.Right - 5, shieldRect.Top + 13), new(shieldRect.Left + 11, shieldRect.Bottom - 3), new(shieldRect.Left + 5, shieldRect.Top + 13), new(shieldRect.Left + 4, shieldRect.Top + 6) };
+                g.DrawPolygon(shieldPen, pts);
+            }
+            int menuX = startX + 68; using (var dotBrush = new SolidBrush(mutedInk)) { g.FillEllipse(dotBrush, menuX, cy - 7, 3, 3); g.FillEllipse(dotBrush, menuX, cy - 1, 3, 3); g.FillEllipse(dotBrush, menuX, cy + 5, 3, 3); }
+            e.Handled = true;
+        }
+    }
+
+    private void OnGridCellMouseClick(object? sender, DataGridViewCellMouseEventArgs e)
+    {
+        if (e.RowIndex < 0 || e.ColumnIndex != grid.Columns["action"].Index) return;
+        grid.ClearSelection(); grid.Rows[e.RowIndex].Selected = true; grid.CurrentCell = grid.Rows[e.RowIndex].Cells["app"];
+        if (e.X < 38) EditRule(e.RowIndex); else if (e.X < 68) ToggleBlockSelected(); else grid.ContextMenuStrip?.Show(Cursor.Position);
+    }
+
+    private void OnSpeedTimerTick()
+    {
+        traffic.TickRateWindow();
+        try
+        {
+            var rates = network.Sample(); currentDownKBps = rates.DownloadKBps; currentUpKBps = rates.UploadKBps;
+            networkAdapterLabel.Text = network.CurrentAdapterName; networkStateLabel.Text = network.IsConnected ? "Connected" : "Disconnected";
+            networkStateLabel.ForeColor = network.IsConnected ? accentGreen : Color.FromArgb(244, 63, 94);
+            downSparkHistory.Add((float)currentDownKBps); if (downSparkHistory.Count > 12) downSparkHistory.RemoveAt(0);
+            upSparkHistory.Add((float)currentUpKBps); if (upSparkHistory.Count > 12) upSparkHistory.RemoveAt(0);
+            taskbarOverlay.UpdateSpeeds(currentDownKBps, currentUpKBps);
+        }
+        catch (Exception ex) when (ex is System.Net.NetworkInformation.NetworkInformationException or InvalidOperationException) { currentDownKBps = 0; currentUpKBps = 0; }
+        downloadCard?.Invalidate(); uploadCard?.Invalidate(); dailyCard?.Invalidate(); monthlyCard?.Invalidate();
+        status.Text = traffic.Status + " · Right-click an app or click Action icons (⏸ / 🛡 / ⋮)";
+    }
+
+    private static string FormatCardSpeed(double kbpsBytes)
+    {
+        double mbpsBits = (kbpsBytes * 8.0) / 1000.0;
+        if (mbpsBits >= 1.0) return mbpsBits.ToString("F1", CultureInfo.InvariantCulture) + " Mbps";
+        double kbpsBits = kbpsBytes * 8.0; return Math.Round(kbpsBits).ToString(CultureInfo.InvariantCulture) + " Kbps";
+    }
+
+    private void NavigateTo(string pageName)
+    {
+        if (pageHost is null || dashboardPage is null) return;
+        activeNavPage = pageName; foreach (var btn in navButtons.Values) btn.Invalidate();
+        pageHost.SuspendLayout();
+        try
+        {
+            foreach (Control old in pageHost.Controls.Cast<Control>().ToList()) { pageHost.Controls.Remove(old); if (!ReferenceEquals(old, dashboardPage)) old.Dispose(); }
+            if (pageName is "Dashboard" or "Applications") { pageHost.Controls.Add(dashboardPage); dashboardPage.Dock = DockStyle.Fill; QueueReload(); return; }
+            var page = BuildNavigationPage(pageName); pageHost.Controls.Add(page); page.Dock = DockStyle.Fill;
+        }
+        finally { pageHost.ResumeLayout(); }
+    }
+
+    private Control BuildNavigationPage(string pageName)
+    {
+        var page = new Panel { BackColor = bg, Padding = new Padding(28) };
+        var titleLabel = new Label { Text = pageName, Dock = DockStyle.Top, Height = 48, Font = titleFont, ForeColor = ink }; page.Controls.Add(titleLabel);
+        string description = pageName switch
+        {
+            "Rules" => $"Active application rules: {settings.Rules.Count}. Double-click any process on the Dashboard or click the Shield icon to manage limits and firewall blocks.",
+            "Monthly Usage" => "Monthly accounting resets automatically on day 1 of each calendar month.",
+            "Statistics" => $"Session traffic collected: {FormatBytes(traffic.SessionTotals.ReceivedBytes + traffic.SessionTotals.SentBytes)}.",
+            "Settings" => "Taskbar Speed Overlay is active next to the Windows clock. Use the system tray icon to toggle Mbps/KBps formatting or hide the indicator.",
+            "About" => "FluxLimiter — Open-source Windows network bandwidth controller and minimalist taskbar speed monitor.",
+            _ => ""
+        };
+        var card = CreateRoundedCardPanel(); card.Dock = DockStyle.Top; card.Height = 140; card.Padding = new Padding(22);
+        card.Controls.Add(new Label { Text = description, Dock = DockStyle.Fill, Font = subtitleFont, ForeColor = ink, TextAlign = ContentAlignment.MiddleLeft });
+        page.Controls.Add(card); card.BringToFront(); return page;
+    }
+
+    private sealed record ProcessRow(string Name, int Pid, string Path, bool IsSystem, long StartTicks);
+    private sealed record ProcessGroup(string Key, string Name, string Path, List<int> Pids, bool IsSystem);
+
+    private static List<ProcessGroup> GroupByExecutable(List<ProcessRow> processes) =>
+        processes.GroupBy(r => r.Path.Length > 0 ? r.Path : "name:" + r.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new ProcessGroup(g.Key, g.First().Name, g.First().Path, g.Select(x => x.Pid).OrderBy(x => x).ToList(), g.First().IsSystem))
+            .OrderBy(g => g.Name, StringComparer.OrdinalIgnoreCase).ToList();
+
+    private void QueueReload()
+    {
+        if (IsDisposed) return; if (dashboardPage is not null && dashboardPage.Parent is null) return;
+        if (reloading) { refreshQueued = true; return; } _ = ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (IsDisposed) return;
+        if (reloading) { refreshQueued = true; return; }
+        reloading = true;
+        try
+        {
+            string query = search.Text.Trim(); int filterIndex = filter.SelectedIndex; string? selectedKey = (grid.CurrentRow?.Tag as ProcessGroup)?.Key; int firstVisible = grid.FirstDisplayedScrollingRowIndex;
+            var allSnapshots = await Task.Run(SnapshotAllProcesses);
+            traffic.Prune(allSnapshots.Select(p => (p.Pid, p.StartTicks))); PruneProcessPathCache(allSnapshots);
+            var allGroups = GroupByExecutable(allSnapshots);
+            await Task.Run(() => { foreach (var ip in allGroups.Select(x => x.Path).Distinct(StringComparer.OrdinalIgnoreCase)) ExecutableIcon(ip); });
+            if (IsDisposed) return;
+            topAppsToday = allGroups.Select(g => (g.Name, ExecutableIcon(g.Path), Bytes: traffic.GetTotal(g.Pids).TotalBytes)).OrderByDescending(x => x.Bytes).Take(5).ToList();
+            topAppsPanel?.Invalidate();
+            if (grid.ContextMenuStrip?.Visible == true) { refreshDeferredByContextMenu = true; return; }
+            if (grid.IsCurrentCellInEditMode) return;
+            var filteredSnapshots = FilterProcesses(allSnapshots, query, filterIndex);
