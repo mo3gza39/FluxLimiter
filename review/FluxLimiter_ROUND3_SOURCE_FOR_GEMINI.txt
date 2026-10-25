@@ -1,0 +1,1074 @@
+FLUXLIMITER ROUND 3 FULL SOURCE REVIEW BUNDLE
+Repository: mo3gza39/FluxLimiter
+Branch: review/initial-audit
+Frozen source commit: d65295df880228aea084fc486cba7bef6ac41cb0
+CI run: 39672844910
+CI result: SUCCESS
+
+===== FILE: .github/workflows/windows-build.yml =====
+name: Windows build
+
+on:
+  push:
+    branches: [main, "dev/**", "review/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Restore
+        run: dotnet restore src/FluxLimiter/FluxLimiter.csproj
+      - name: Build
+        run: dotnet build src/FluxLimiter/FluxLimiter.csproj -c Release --no-restore
+      - name: Run deterministic scheduler tests
+        run: dotnet run --project tests/FluxLimiter.CoreTests/FluxLimiter.CoreTests.csproj -c Release
+      - name: Publish portable executable
+        run: dotnet publish src/FluxLimiter/FluxLimiter.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableWindowsTargeting=true -o dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FluxLimiter-win-x64
+          path: dist/
+
+
+===== FILE: src/FluxLimiter/FluxLimiter.csproj =====
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+  </PropertyGroup>
+</Project>
+
+
+===== FILE: src/FluxLimiter/MainForm.cs =====
+using System.Diagnostics;
+using System.Drawing;
+using System.Globalization;
+using System.Text;
+using System.Windows.Forms;
+
+namespace FluxLimiter;
+
+public sealed class MainForm : Form
+{
+    private readonly AppSettings settings = SettingsStore.Load();
+    private readonly NetworkSampler network = new();
+    private readonly Label speed = new();
+    private readonly DataGridView grid = new();
+    private readonly TextBox search = new();
+    private readonly ComboBox filter = new();
+    private readonly System.Windows.Forms.Timer refresh = new() { Interval = 5000 };
+    private bool reloading;
+    private bool refreshQueued;
+    private bool settingsSaveDisabled;
+    private readonly System.Windows.Forms.Timer searchDebounce = new() { Interval = 300 };
+    private readonly System.Windows.Forms.Timer speedTimer = new() { Interval = 1000 };
+    private readonly Label status = new();
+    private readonly Label processCount = new();
+    private readonly Label ruleCount = new();
+    private readonly Label dailyUsage = new();
+    private readonly Label monthlyUsage = new();
+    private readonly Color bg = Color.FromArgb(16, 22, 34);
+    private readonly Color panel = Color.FromArgb(25, 34, 49);
+    private readonly Color ink = Color.FromArgb(229, 237, 246);
+
+    public MainForm()
+    {
+        Text = "FluxLimiter — Network Control";
+        Width = 1480;
+        Height = 900;
+        MinimumSize = new Size(1180, 720);
+        BackColor = bg;
+        ForeColor = ink;
+        Font = new Font("Segoe UI", 10);
+        StartPosition = FormStartPosition.CenterScreen;
+        AutoScaleMode = AutoScaleMode.Dpi;
+
+        var top = new Panel { Dock = DockStyle.Top, Height = 176, BackColor = panel, Padding = new Padding(28, 18, 28, 14) };
+        var title = new Label { Text = "FluxLimiter", Font = new Font("Segoe UI Semibold", 26), ForeColor = Color.FromArgb(91, 225, 184), Left = 28, Top = 16, AutoSize = true };
+        var subtitle = new Label { Text = "Network control dashboard", Left = 30, Top = 62, AutoSize = true, ForeColor = Color.FromArgb(155, 171, 190) };
+        processCount.SetBounds(780, 24, 170, 54); processCount.Font = new Font("Segoe UI Semibold", 13); processCount.ForeColor = ink; processCount.TextAlign = ContentAlignment.MiddleCenter; processCount.BackColor = bg;
+        ruleCount.SetBounds(965, 24, 170, 54); ruleCount.Font = new Font("Segoe UI Semibold", 13); ruleCount.ForeColor = ink; ruleCount.TextAlign = ContentAlignment.MiddleCenter; ruleCount.BackColor = bg;
+        search.SetBounds(28, 116, 390, 34);
+        search.PlaceholderText = "Search application or executable...";
+        search.TextChanged += (_, _) => { searchDebounce.Stop(); searchDebounce.Start(); };
+        filter.SetBounds(432, 116, 175, 34);
+        filter.DropDownStyle = ComboBoxStyle.DropDownList;
+        filter.Items.AddRange(new object[] { "All processes", "User processes", "System processes" });
+        filter.SelectedIndex = 0;
+        filter.SelectedIndexChanged += (_, _) => QueueReload();
+        var export = Button("Export CSV", 624, 116, 120, (_, _) => ExportCsv()); export.Height = 34;
+        var reload = Button("Refresh", 756, 116, 105, (_, _) => Reload()); reload.Height = 34;
+        top.Controls.AddRange(new Control[] { title, subtitle, processCount, ruleCount, search, filter, export, reload });
+
+        grid.Dock = DockStyle.Fill;
+        grid.BackgroundColor = bg;
+        grid.GridColor = Color.FromArgb(45, 58, 74);
+        grid.BorderStyle = BorderStyle.None;
+        grid.RowHeadersVisible = false;
+        grid.AllowUserToAddRows = false;
+        grid.AllowUserToDeleteRows = false;
+        grid.ReadOnly = false;
+        grid.MultiSelect = false;
+        grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+        grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+        grid.RowTemplate.Height = 34;
+        grid.ColumnHeadersHeight = 38;
+        grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
+        grid.CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal;
+        grid.DefaultCellStyle.Padding = new Padding(8, 0, 8, 0);
+        grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(19, 27, 40);
+        grid.EnableHeadersVisualStyles = false;
+        grid.ColumnHeadersDefaultCellStyle.BackColor = panel;
+        grid.ColumnHeadersDefaultCellStyle.ForeColor = ink;
+        grid.DefaultCellStyle.BackColor = bg;
+        grid.DefaultCellStyle.ForeColor = ink;
+        grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(38, 99, 100);
+        grid.DefaultCellStyle.SelectionForeColor = Color.White;
+        grid.Columns.Add("app", "Application");
+        grid.Columns.Add("status", "Status");
+        grid.Columns.Add("download", "Download ↓");
+        grid.Columns.Add("upload", "Upload ↑");
+        grid.Columns.Add("total", "Total");
+        grid.Columns.Add("down", "Limit Download");
+        grid.Columns.Add("up", "Limit Upload");
+        grid.Columns.Add("rule", "Rule");
+        grid.Columns.Add("action", "Action");
+        grid.Columns.Add("pid", "PID");
+        grid.Columns.Add("path", "Executable");
+        grid.Columns["pid"].Visible = false;
+        grid.Columns["path"].Visible = false;
+        grid.Columns["app"].FillWeight = 120;
+        grid.Columns["status"].FillWeight = 60;
+        grid.Columns["download"].FillWeight = 78;
+        grid.Columns["upload"].FillWeight = 72;
+        grid.Columns["total"].FillWeight = 65;
+        grid.Columns["down"].FillWeight = 90;
+        grid.Columns["up"].FillWeight = 86;
+        grid.Columns["rule"].FillWeight = 58;
+        grid.Columns["action"].FillWeight = 45;
+        foreach (DataGridViewColumn column in grid.Columns) column.ReadOnly = true;
+        grid.Columns["down"].ReadOnly = false;
+        grid.Columns["up"].ReadOnly = false;
+        grid.CellEndEdit += (_, e) => { if (e.RowIndex >= 0 && (e.ColumnIndex == grid.Columns["down"].Index || e.ColumnIndex == grid.Columns["up"].Index)) SaveInlineRule(e.RowIndex); };
+        grid.CellDoubleClick += (_, e) => { if (e.RowIndex >= 0) EditRule(e.RowIndex); };
+
+        var bottom = new Panel { Dock = DockStyle.Bottom, Height = 68, BackColor = panel };
+        speed.SetBounds(28, 37, 900, 24);
+        speed.ForeColor = Color.FromArgb(91, 225, 184);
+        speed.Text = "Device traffic: sampling... (not per-app; virtual adapters may double-count)";
+        bottom.Controls.Add(speed);
+        status.AutoSize = true;
+        status.Left = 28;
+        status.Top = 12;
+        status.ForeColor = Color.FromArgb(170, 185, 200);
+        bottom.Controls.Add(status);
+        // Approved product shell: persistent navigation + dashboard composition.
+        var shell = new Panel { Dock = DockStyle.Fill, BackColor = bg };
+        var sidebar = new Panel { Dock = DockStyle.Left, Width = 218, BackColor = Color.FromArgb(13, 20, 30) };
+        sidebar.Controls.Add(new Label { Text = "FluxLimiter", Left = 22, Top = 24, Width = 180, Height = 40, Font = new Font("Segoe UI Semibold", 22), ForeColor = Color.FromArgb(91, 225, 184) });
+        sidebar.Controls.Add(new Label { Text = "NETWORK CONTROL", Left = 24, Top = 65, Width = 170, Height = 20, Font = new Font("Segoe UI Semibold", 8), ForeColor = Color.FromArgb(115, 132, 151) });
+        string[] nav = { "Dashboard", "Applications", "Rules", "Monthly Usage", "Statistics", "Settings", "About" };
+        for (int i = 0; i < nav.Length; i++)
+        {
+            var n = new Button { Text = nav[i], Left = 16, Top = 112 + (i * 50), Width = 186, Height = 40, FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(16, 0, 0, 0), BackColor = i == 0 ? Color.FromArgb(27, 37, 52) : sidebar.BackColor, ForeColor = i == 0 ? ink : Color.FromArgb(145, 159, 177) };
+            n.FlatAppearance.BorderSize = 0;
+            sidebar.Controls.Add(n);
+        }
+
+        var dashboard = new Panel { Dock = DockStyle.Fill, BackColor = bg, AutoScroll = true, Padding = new Padding(28, 20, 28, 20) };
+        top.Dock = DockStyle.Top; top.Height = 166; top.Margin = new Padding(0, 0, 0, 16);
+        title.Text = "Dashboard"; title.ForeColor = ink;
+        subtitle.Text = "Monitor and control application network activity";
+        processCount.Text = "Processes"; ruleCount.Text = "Saved rules";
+
+        var summary = new TableLayoutPanel { Dock = DockStyle.Top, Height = 104, ColumnCount = 4, RowCount = 1, BackColor = bg, Margin = new Padding(0, 16, 0, 16), Padding = new Padding(0) };
+        for (int i = 0; i < 4; i++) summary.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        summary.Controls.Add(DashboardCard("DOWNLOAD", speed, "Live device traffic"), 0, 0);
+        summary.Controls.Add(DashboardCard("UPLOAD", new Label { Text = "Live", ForeColor = ink, Font = new Font("Segoe UI Semibold", 17) }, "Live device traffic"), 1, 0);
+        summary.Controls.Add(DashboardCard("DAILY USAGE", dailyUsage, "Collector not connected"), 2, 0);
+        summary.Controls.Add(DashboardCard("MONTHLY USAGE", monthlyUsage, "Collector not connected"), 3, 0);
+
+        var middle = new TableLayoutPanel { Dock = DockStyle.Top, Height = 176, ColumnCount = 2, RowCount = 1, BackColor = bg, Margin = new Padding(0, 16, 0, 16) };
+        middle.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        middle.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        var topApps = DashboardPlaceholder("Top Applications", "Today", "Per-application traffic attribution is not connected yet.", 0, 0, 0, 160);
+        var sevenDays = DashboardPlaceholder("Daily Usage", "Last 7 days", "Usage history will appear here after the collector is implemented.", 0, 0, 0, 160);
+        topApps.Dock = DockStyle.Fill; topApps.Margin = new Padding(0, 0, 8, 0);
+        sevenDays.Dock = DockStyle.Fill; sevenDays.Margin = new Padding(8, 0, 0, 0);
+        middle.Controls.Add(topApps, 0, 0); middle.Controls.Add(sevenDays, 1, 0);
+
+        var active = new Panel { Dock = DockStyle.Fill, BackColor = panel, Margin = new Padding(0, 16, 0, 0) };
+        active.Controls.Add(new Label { Text = "Active Applications", Left = 20, Top = 14, Width = 260, Height = 32, Font = new Font("Segoe UI Semibold", 15), ForeColor = ink });
+        grid.Dock = DockStyle.None; grid.SetBounds(20, 54, 1120, 252); grid.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+        active.Controls.Add(grid);
+
+        bottom.Visible = false;
+        var content = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, BackColor = bg };
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 182));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 192));
+        content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        content.Controls.Add(top, 0, 0);
+        content.Controls.Add(summary, 0, 1);
+        content.Controls.Add(middle, 0, 2);
+        content.Controls.Add(active, 0, 3);
+        dashboard.Controls.Add(content);
+        shell.Controls.Add(dashboard);
+        shell.Controls.Add(sidebar);
+        Controls.Add(shell);
+        searchDebounce.Tick += (_, _) => { searchDebounce.Stop(); QueueReload(); };
+        refresh.Tick += (_, _) => { if (!grid.ContainsFocus && grid.ContextMenuStrip?.Visible != true) QueueReload(); };
+        refresh.Start();
+        speedTimer.Tick += (_, _) => { try { var rates = network.Sample(); speed.Text = $"Live traffic    ↓ {rates.DownloadKBps:F1} KB/s     ↑ {rates.UploadKBps:F1} KB/s"; } catch (Exception ex) when (ex is System.Net.NetworkInformation.NetworkInformationException or InvalidOperationException) { speed.Text = "Device speed unavailable"; } };
+        speedTimer.Start();
+        SetupContextMenu();
+        if (!string.IsNullOrWhiteSpace(SettingsStore.LastLoadWarning))
+        {
+            settingsSaveDisabled = SettingsStore.LastLoadWarning.Contains("Saving is disabled", StringComparison.OrdinalIgnoreCase);
+            MessageBox.Show(SettingsStore.LastLoadWarning, "FluxLimiter settings recovery");
+        }
+        _ = ReloadAsync();
+    }
+
+    private Panel DashboardCard(string heading, Label value, string note)
+    {
+        var card = new Panel { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 14, 0), BackColor = panel };
+        card.Controls.Add(new Label { Text = heading, Left = 18, Top = 14, Width = 180, Height = 20, ForeColor = Color.FromArgb(145, 159, 177), Font = new Font("Segoe UI Semibold", 8) });
+        value.Left = 18; value.Top = 38; value.Width = 220; value.Height = 32; value.Font = new Font("Segoe UI Semibold", 17); value.ForeColor = ink;
+        card.Controls.Add(value);
+        card.Controls.Add(new Label { Text = note, Left = 18, Top = 76, Width = 230, Height = 18, ForeColor = Color.FromArgb(100, 117, 136), Font = new Font("Segoe UI", 8) });
+        return card;
+    }
+
+    private Panel DashboardPlaceholder(string heading, string period, string message, int x, int y, int width, int height)
+    {
+        var card = new Panel { Left = x, Top = y, Width = width, Height = height, BackColor = panel, MinimumSize = new Size(260, 130) };
+        card.Controls.Add(new Label { Text = heading, Left = 20, Top = 14, Width = 260, Height = 30, Font = new Font("Segoe UI Semibold", 14), ForeColor = ink });
+        card.Controls.Add(new Label { Text = period, Left = width - 145, Top = 18, Width = 120, Height = 22, TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.FromArgb(145, 159, 177), Anchor = AnchorStyles.Top | AnchorStyles.Right });
+        card.Controls.Add(new Label { Text = message, Left = 24, Top = 66, Width = width - 48, Height = 50, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.FromArgb(145, 159, 177), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right });
+        return card;
+    }
+
+    private Button Button(string text, int x, int y, int w, EventHandler click)
+    {
+        var b = new Button { Text = text, Left = x, Top = y, Width = w, Height = 28, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(45, 74, 91), ForeColor = Color.White };
+        b.FlatAppearance.BorderSize = 0;
+        b.Click += click;
+        return b;
+    }
+
+    private sealed record ProcessRow(string Name, int Pid, string Path, bool IsSystem);
+
+    private void QueueReload()
+    {
+        if (IsDisposed) return;
+        if (reloading) { refreshQueued = true; return; }
+        _ = ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (IsDisposed) return;
+        if (reloading) { refreshQueued = true; return; }
+        reloading = true;
+        try
+        {
+            string query = search.Text.Trim();
+            int filterIndex = filter.SelectedIndex;
+            int? selectedPid = grid.CurrentRow?.Cells["pid"].Value is int pid ? pid : null;
+            string? selectedPath = grid.CurrentRow?.Cells["path"].Value?.ToString();
+            int firstVisible = grid.FirstDisplayedScrollingRowIndex;
+
+            var snapshots = await Task.Run(() => SnapshotProcesses(query, filterIndex));
+            if (IsDisposed) return;
+            var rows = snapshots.Select(p =>
+            {
+                var rule = RuleCatalog.Find(settings, p.Path);
+                return new object[] { p.Name, rule?.Blocked == true ? "Blocked" : "Active", "—", "—", "—",
+                    rule?.DownloadLimitKBps?.ToString(CultureInfo.InvariantCulture) ?? "Unlimited",
+                    rule?.UploadLimitKBps?.ToString(CultureInfo.InvariantCulture) ?? "Unlimited",
+                    rule is null ? "None" : "Custom", "•••", p.Pid, p.Path };
+            }).ToList();
+
+            grid.SuspendLayout();
+            try
+            {
+                grid.Rows.Clear();
+                int selectedIndex = -1;
+                for (int i = 0; i < rows.Count; i++)
+                {
+                    int row = grid.Rows.Add(rows[i]);
+                    if (selectedPid.HasValue && Equals(rows[i][9], selectedPid.Value) &&
+                        string.Equals(rows[i][10]?.ToString(), selectedPath, StringComparison.OrdinalIgnoreCase))
+                        selectedIndex = row;
+                }
+                grid.ClearSelection();
+                if (selectedIndex >= 0)
+                {
+                    grid.Rows[selectedIndex].Selected = true;
+                    grid.CurrentCell = grid.Rows[selectedIndex].Cells[0];
+                }
+                if (firstVisible >= 0 && firstVisible < grid.Rows.Count)
+                    grid.FirstDisplayedScrollingRowIndex = firstVisible;
+            }
+            finally { grid.ResumeLayout(); }
+            status.Text = "Right-click an application for controls";
+            processCount.Text = rows.Count.ToString(CultureInfo.InvariantCulture) + "  Processes";
+            ruleCount.Text = settings.Rules.Count.ToString(CultureInfo.InvariantCulture) + "  Saved rules";
+        }
+        finally
+        {
+            reloading = false;
+            if (refreshQueued && !IsDisposed)
+            {
+                refreshQueued = false;
+                BeginInvoke((Action)QueueReload);
+            }
+        }
+    }
+
+    private static List<ProcessRow> SnapshotProcesses(string query, int filterIndex)
+    {
+        string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        var rows = new List<ProcessRow>();
+        foreach (var p in Process.GetProcesses().OrderBy(p => p.ProcessName))
+        {
+            try
+            {
+                string name = p.ProcessName;
+                string path;
+                try { path = p.MainModule?.FileName ?? ""; } catch { path = ""; }
+                if (!name.Contains(query, StringComparison.OrdinalIgnoreCase) && !path.Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
+                bool isSystem = path.StartsWith(windows, StringComparison.OrdinalIgnoreCase);
+                if (filterIndex == 1 && isSystem) continue;
+                if (filterIndex == 2 && !isSystem) continue;
+                rows.Add(new ProcessRow(name, p.Id, path, isSystem));
+            }
+            catch (InvalidOperationException) { }
+            catch (System.ComponentModel.Win32Exception) { }
+            finally { p.Dispose(); }
+        }
+        return rows;
+    }
+
+    private void Reload() => QueueReload();
+
+    private void SaveInlineRule(int rowIndex)
+    {
+        string path = grid.Rows[rowIndex].Cells["path"].Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(path)) return;
+        if (!TryLimit(grid.Rows[rowIndex].Cells["down"].Value?.ToString() ?? "", out var down) ||
+            !TryLimit(grid.Rows[rowIndex].Cells["up"].Value?.ToString() ?? "", out var up))
+        {
+            MessageBox.Show("Use a positive whole number in KB/s, or Unlimited.", "Invalid limit");
+            Reload();
+            return;
+        }
+        var rule = RuleCatalog.Find(settings, path) ?? new AppRule { ExecutablePath = path };
+        rule.DownloadLimitKBps = down;
+        rule.UploadLimitKBps = up;
+        if (!settings.Rules.Contains(rule)) settings.Rules.Add(rule);
+        if (!TrySaveSettings()) return;
+        Reload();
+    }
+
+    private void EditRule(int index)
+    {
+        string path = grid.Rows[index].Cells["path"].Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            MessageBox.Show("Executable path unavailable. Try running FluxLimiter as administrator.", "FluxLimiter");
+            return;
+        }
+        var rule = settings.Rules.FirstOrDefault(r => string.Equals(r.ExecutablePath, path, StringComparison.OrdinalIgnoreCase));
+        using var dialog = new Form { Text = "Saved rule — " + Path.GetFileName(path), Width = 450, Height = 260, StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, BackColor = panel, ForeColor = ink, Font = Font };
+        var dl = new TextBox { Left = 170, Top = 25, Width = 225, Text = rule?.DownloadLimitKBps?.ToString() ?? "", BackColor = bg, ForeColor = ink };
+        var ul = new TextBox { Left = 170, Top = 65, Width = 225, Text = rule?.UploadLimitKBps?.ToString() ?? "", BackColor = bg, ForeColor = ink };
+        var blocked = new CheckBox { Left = 170, Top = 105, Text = "Block application", Checked = rule?.Blocked ?? false, AutoSize = true };
+        dialog.Controls.AddRange(new Control[] {
+            new Label { Text = "Download KB/s", Left = 18, Top = 28, AutoSize = true },
+            new Label { Text = "Upload KB/s", Left = 18, Top = 68, AutoSize = true },
+            dl, ul, blocked,
+            new Label { Text = "Blank = unlimited. Rules saved but not enforced in this preview.", Left = 18, Top = 143, Width = 410, Height = 34 }
+        });
+        var save = new Button { Text = "Save rule", Left = 280, Top = 176, Width = 115, DialogResult = DialogResult.OK, BackColor = Color.FromArgb(45, 74, 91), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+        dialog.Controls.Add(save);
+        dialog.AcceptButton = save;
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        if (!TryLimit(dl.Text, out var down) || !TryLimit(ul.Text, out var up))
+        {
+            MessageBox.Show("Enter a positive whole number, or leave blank for unlimited.", "Invalid limit");
+            return;
+        }
+        rule ??= new AppRule { ExecutablePath = path };
+        rule.DownloadLimitKBps = down;
+        rule.UploadLimitKBps = up;
+        rule.Blocked = blocked.Checked;
+        if (!settings.Rules.Contains(rule)) settings.Rules.Add(rule);
+        if (!TrySaveSettings()) return;
+        Reload();
+    }
+
+    private static bool TryLimit(string value, out int? limit)
+    {
+        limit = null;
+        if (string.IsNullOrWhiteSpace(value) || value.Trim().Equals("Unlimited", StringComparison.OrdinalIgnoreCase)) return true;
+        if (!int.TryParse(value, out int n) || n <= 0) return false;
+        limit = n;
+        return true;
+    }
+
+    private void SetupContextMenu()
+    {
+        var menu = new ContextMenuStrip { BackColor = panel, ForeColor = ink, ShowImageMargin = false };
+        menu.Items.Add("Open File Location", null, (_, _) => WithSelectedPath(path =>
+        {
+            try
+            {
+                var psi = new ProcessStartInfo("explorer.exe") { UseShellExecute = true };
+                psi.ArgumentList.Add("/select," + path);
+                Process.Start(psi);
+            }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { MessageBox.Show(ex.Message); }
+        }));
+        menu.Items.Add("Properties", null, (_, _) => WithSelectedPath(path =>
+        {
+            try
+            {
+                var psi = new ProcessStartInfo("rundll32.exe") { UseShellExecute = true };
+                psi.ArgumentList.Add("shell32.dll,ShellExec_RunDLL");
+                psi.ArgumentList.Add("properties");
+                psi.ArgumentList.Add(path);
+                Process.Start(psi);
+            }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { MessageBox.Show(ex.Message); }
+        }));
+        menu.Items.Add("Set speed limit", null, (_, _) => { if (grid.CurrentRow is not null) EditRule(grid.CurrentRow.Index); });
+        menu.Items.Add("Toggle block rule", null, (_, _) => ToggleBlockSelected());
+        menu.Items.Add("Usage statistics", null, (_, _) => MessageBox.Show("Per-app traffic attribution is not implemented yet."));
+        menu.Items.Add("Copy File Path", null, (_, _) => WithSelectedPath(path => Clipboard.SetText(path)));
+        menu.Items.Add("View Process Details", null, (_, _) =>
+        {
+            if (grid.CurrentRow is null) return;
+            MessageBox.Show("PID: " + grid.CurrentRow.Cells["pid"].Value + Environment.NewLine +
+                "Executable: " + grid.CurrentRow.Cells["path"].Value, "Process details");
+        });
+        grid.ContextMenuStrip = menu;
+        grid.CellMouseDown += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Right && e.RowIndex >= 0)
+            {
+                grid.ClearSelection();
+                grid.Rows[e.RowIndex].Selected = true;
+                grid.CurrentCell = grid.Rows[e.RowIndex].Cells[0];
+            }
+        };
+    }
+
+    private void ToggleBlockSelected()
+    {
+        string path = grid.CurrentRow?.Cells["path"].Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(path)) { MessageBox.Show("Executable path unavailable."); return; }
+        var rule = RuleCatalog.Find(settings, path);
+        if (rule is null)
+        {
+            rule = new AppRule { ExecutablePath = path, Blocked = true };
+            settings.Rules.Add(rule);
+        }
+        else rule.Blocked = !rule.Blocked;
+        if (!TrySaveSettings()) return;
+        Reload();
+    }
+
+    private bool TrySaveSettings()
+    {
+        if (settingsSaveDisabled)
+        {
+            MessageBox.Show("Settings cannot be saved because the previous settings file could not be safely preserved.", "Saving disabled");
+            return false;
+        }
+        try
+        {
+            SettingsStore.Save(settings);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(ex.Message, "Unable to save settings");
+            return false;
+        }
+    }
+
+    private void WithSelectedPath(Action<string> action)
+    {
+        var path = grid.CurrentRow?.Cells["path"].Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(path)) { MessageBox.Show("Executable path unavailable."); return; }
+        action(path);
+    }
+
+    internal static string CsvCell(string value)
+    {
+        // Prevent spreadsheet applications from interpreting exported process data as formulas.
+        string safe = value;
+        if (safe.Length > 0 && "=+-@".Contains(safe[0])) safe = "'" + safe;
+        return "\"" + safe.Replace("\"", "\"\"") + "\"";
+    }
+
+    private void ExportCsv()
+    {
+        using var dialog = new SaveFileDialog { Filter = "CSV (*.csv)|*.csv", FileName = "fluxlimiter-processes.csv" };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        var csv = new StringBuilder();
+        csv.AppendLine("Application,PID,Executable,DownloadLimitKBps,UploadLimitKBps,Blocked");
+        foreach (DataGridViewRow row in grid.Rows)
+        {
+            string[] values = {
+                row.Cells["app"].Value?.ToString() ?? "",
+                row.Cells["pid"].Value?.ToString() ?? "",
+                row.Cells["path"].Value?.ToString() ?? "",
+                row.Cells["down"].Value?.ToString() ?? "",
+                row.Cells["up"].Value?.ToString() ?? "",
+                string.Equals(row.Cells["status"].Value?.ToString(), "Blocked", StringComparison.OrdinalIgnoreCase) ? "true" : "false"
+            };
+            csv.AppendLine(string.Join(",", values.Select(CsvCell)));
+        }
+        try { File.WriteAllText(dialog.FileName, csv.ToString(), new UTF8Encoding(true)); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { MessageBox.Show(ex.Message, "Export failed"); }
+    }
+}
+
+
+===== FILE: src/FluxLimiter/Models.cs =====
+namespace FluxLimiter;
+
+public sealed class AppRule
+{
+    public string ExecutablePath { get; set; } = "";
+    // KB/s = kilobytes per second (1024 bytes), NOT kilobits.
+    public int? DownloadLimitKBps { get; set; }
+    public int? UploadLimitKBps { get; set; }
+    public bool Blocked { get; set; }
+    public string? GroupId { get; set; }
+
+    // Legacy JSON keys from initial scaffold: Kbps was ambiguous.
+    [System.Text.Json.Serialization.JsonPropertyName("DownloadLimitKbps")]
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? LegacyDownloadLimit { get => null; set { if (value.HasValue && !DownloadLimitKBps.HasValue) DownloadLimitKBps = value; } }
+    [System.Text.Json.Serialization.JsonPropertyName("UploadLimitKbps")]
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? LegacyUploadLimit { get => null; set { if (value.HasValue && !UploadLimitKBps.HasValue) UploadLimitKBps = value; } }
+}
+
+public sealed class ExecutableGroup
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string Name { get; set; } = "";
+    public int? DownloadLimitKBps { get; set; }
+    public int? UploadLimitKBps { get; set; }
+}
+
+public sealed class AppSettings
+{
+    public int SchemaVersion { get; set; } = 2;
+    public List<AppRule> Rules { get; set; } = new();
+    public List<ExecutableGroup> Groups { get; set; } = new();
+    public bool StartWithWindows { get; set; }
+}
+
+
+===== FILE: src/FluxLimiter/NetworkSampler.cs =====
+using System.Diagnostics;
+using System.Net.NetworkInformation;
+
+namespace FluxLimiter;
+
+// Device-level adapter throughput only. Does not attribute traffic to applications.
+public sealed class NetworkSampler
+{
+    private readonly Dictionary<string, (long Received, long Sent)> previous = new();
+    private long lastTick;
+    public (double DownloadKBps, double UploadKBps) Sample()
+    {
+        long now = Stopwatch.GetTimestamp();
+        double elapsed = lastTick == 0 ? 0 : (now - lastTick) / (double)Stopwatch.Frequency;
+        double down = 0, up = 0;
+        var live = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var adapter in NetworkInterface.GetAllNetworkInterfaces())
+        {
+            if (adapter.OperationalStatus != OperationalStatus.Up ||
+                adapter.NetworkInterfaceType == NetworkInterfaceType.Loopback ||
+                adapter.NetworkInterfaceType == NetworkInterfaceType.Tunnel) continue;
+            try
+            {
+                var stats = adapter.GetIPv4Statistics();
+                string id = adapter.Id;
+                live.Add(id);
+                if (elapsed > 0 && previous.TryGetValue(id, out var old))
+                {
+                    long received = stats.BytesReceived - old.Received;
+                    long sent = stats.BytesSent - old.Sent;
+                    if (received >= 0) down += received;
+                    if (sent >= 0) up += sent;
+                }
+                previous[id] = (stats.BytesReceived, stats.BytesSent);
+            }
+            catch (NetworkInformationException) { }
+        }
+        foreach (string id in previous.Keys.Where(k => !live.Contains(k)).ToArray()) previous.Remove(id);
+        lastTick = now;
+        return elapsed > 0 ? (down / elapsed / 1024.0, up / elapsed / 1024.0) : (0, 0);
+    }
+}
+
+
+===== FILE: src/FluxLimiter/Program.cs =====
+using System;
+using System.Windows.Forms;
+
+namespace FluxLimiter;
+
+internal static class Program
+{
+    [STAThread]
+    private static void Main()
+    {
+        ApplicationConfiguration.Initialize();
+        Application.Run(new MainForm());
+    }
+}
+
+
+===== FILE: src/FluxLimiter/RuleCatalog.cs =====
+namespace FluxLimiter;
+
+// Configuration model only. Network enforcement is NOT implemented in this prototype.
+public static class RuleCatalog
+{
+    public static string NormalizePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return "";
+        try { return Path.GetFullPath(path.Trim().Trim('"')); }
+        catch (ArgumentException) { return ""; }
+        catch (NotSupportedException) { return ""; }
+        catch (PathTooLongException) { return ""; }
+    }
+
+    public static AppRule? Find(AppSettings settings, string executablePath)
+    {
+        string normalized = NormalizePath(executablePath);
+        if (normalized.Length == 0) return null;
+        return settings.Rules.FirstOrDefault(r =>
+            string.Equals(NormalizePath(r.ExecutablePath), normalized, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public static (int? DownKBps, int? UpKBps, bool Blocked, string Scope) Resolve(AppSettings settings, string executablePath)
+    {
+        var rule = Find(settings, executablePath);
+        if (rule is null) return (null, null, false, "Unmanaged");
+        var group = settings.Groups.FirstOrDefault(g => !string.IsNullOrWhiteSpace(rule.GroupId) &&
+            string.Equals(g.Id, rule.GroupId, StringComparison.OrdinalIgnoreCase));
+        return group is null
+            ? (rule.DownloadLimitKBps, rule.UploadLimitKBps, rule.Blocked, "Executable")
+            : (group.DownloadLimitKBps, group.UploadLimitKBps, rule.Blocked, "Group: " + group.Name);
+    }
+
+    public static bool ValidLimit(int? value) => value is null || value > 0;
+
+    public static string ProcessKey(int pid, string path) => pid.ToString(System.Globalization.CultureInfo.InvariantCulture) + "|" + NormalizePath(path);
+}
+
+
+===== FILE: src/FluxLimiter/SettingsStore.cs =====
+using System.Text.Json;
+
+namespace FluxLimiter;
+
+public static class SettingsStore
+{
+    private static readonly string Folder = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FluxLimiter");
+    private static readonly string FilePath = Path.Combine(Folder, "settings.json");
+    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    public static string? LastLoadWarning { get; private set; }
+
+    public static AppSettings Load()
+    {
+        LastLoadWarning = null;
+        try
+        {
+            if (!File.Exists(FilePath)) return new();
+            var settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new();
+            settings.Rules ??= new();
+            settings.Groups ??= new();
+            // Ignore invalid/duplicate paths and invalid limits, rather than applying ambiguous rules.
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            settings.Rules = settings.Rules.Where(r =>
+                !string.IsNullOrWhiteSpace(RuleCatalog.NormalizePath(r.ExecutablePath)) &&
+                RuleCatalog.ValidLimit(r.DownloadLimitKBps) && RuleCatalog.ValidLimit(r.UploadLimitKBps) &&
+                seen.Add(RuleCatalog.NormalizePath(r.ExecutablePath))).ToList();
+            settings.Groups = settings.Groups.Where(g =>
+                !string.IsNullOrWhiteSpace(g.Id) &&
+                RuleCatalog.ValidLimit(g.DownloadLimitKBps) && RuleCatalog.ValidLimit(g.UploadLimitKBps))
+                .GroupBy(g => g.Id, StringComparer.OrdinalIgnoreCase).Select(g => g.First()).ToList();
+            return settings;
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            // Never leave a corrupt primary file in place where a later Save could replace it.
+            try
+            {
+                if (File.Exists(FilePath))
+                {
+                    string corrupt = FilePath + ".corrupt-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture);
+                    File.Move(FilePath, corrupt, overwrite: false);
+                    LastLoadWarning = "Settings could not be loaded. The original file was preserved as " + Path.GetFileName(corrupt) + ".";
+                }
+                else LastLoadWarning = "Settings could not be loaded: " + ex.Message;
+            }
+            catch (Exception preserveEx) when (preserveEx is IOException or UnauthorizedAccessException)
+            {
+                // Refuse silent destructive recovery if the original cannot be preserved.
+                LastLoadWarning = "Settings could not be loaded or preserved. Saving is disabled for this session.";
+            }
+            return new();
+        }
+    }
+
+    public static void Save(AppSettings settings)
+    {
+        Directory.CreateDirectory(Folder);
+        string temp = FilePath + ".tmp";
+        string backup = FilePath + ".bak";
+        File.WriteAllText(temp, JsonSerializer.Serialize(settings, JsonOptions));
+        try
+        {
+            if (File.Exists(FilePath))
+                File.Replace(temp, FilePath, backup);
+            else
+                File.Move(temp, FilePath);
+        }
+        finally
+        {
+            if (File.Exists(temp)) File.Delete(temp);
+        }
+    }
+}
+
+
+===== FILE: src/FluxLimiter/SharedRateLimiter.cs =====
+namespace FluxLimiter;
+
+// Pure, deterministic scheduler core. It does NOT intercept or throttle OS traffic.
+// All byte budgets are binary KB/s (1 KB = 1024 bytes).
+public sealed class SharedRateLimiter
+{
+    private sealed class Bucket
+    {
+        public double Tokens;
+        public double LastSeconds;
+        public double Capacity;
+        public double Rate;
+    }
+
+    private readonly Dictionary<string, Bucket> buckets = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object gate = new();
+
+    public bool TryConsume(string identity, int limitKBps, int bytes, double monotonicSeconds)
+    {
+        if (string.IsNullOrWhiteSpace(identity)) throw new ArgumentException("Identity is required.", nameof(identity));
+        if (limitKBps <= 0) throw new ArgumentOutOfRangeException(nameof(limitKBps));
+        if (bytes < 0) throw new ArgumentOutOfRangeException(nameof(bytes));
+        if (double.IsNaN(monotonicSeconds) || double.IsInfinity(monotonicSeconds) || monotonicSeconds < 0)
+            throw new ArgumentOutOfRangeException(nameof(monotonicSeconds));
+        double rate = limitKBps * 1024.0;
+        lock (gate)
+        {
+            if (!buckets.TryGetValue(identity, out var bucket))
+            {
+                bucket = new Bucket { Rate = rate, Capacity = rate, Tokens = rate, LastSeconds = monotonicSeconds };
+                buckets.Add(identity, bucket);
+            }
+            else
+            {
+                double elapsed = Math.Max(0, monotonicSeconds - bucket.LastSeconds);
+                bucket.Tokens = Math.Min(bucket.Capacity, bucket.Tokens + elapsed * bucket.Rate);
+                bucket.LastSeconds = Math.Max(bucket.LastSeconds, monotonicSeconds);
+                if (bucket.Rate != rate)
+                {
+                    bucket.Rate = rate;
+                    bucket.Capacity = rate;
+                    bucket.Tokens = Math.Min(bucket.Tokens, rate);
+                }
+            }
+            if (bytes > bucket.Tokens) return false;
+            bucket.Tokens -= bytes;
+            return true;
+        }
+    }
+
+    // The caller must split payloads larger than the one-second bucket capacity.
+    // Direction-specific keys keep download and upload accounting independent.
+    public static string DirectionKey(string scope, bool download)
+    {
+        if (string.IsNullOrWhiteSpace(scope)) throw new ArgumentException("Scope is required.", nameof(scope));
+        return (download ? "down:" : "up:") + scope.Trim();
+    }
+
+    public void Remove(string identity)
+    {
+        lock (gate) buckets.Remove(identity);
+    }
+}
+
+
+===== FILE: src/FluxLimiter/TrafficPacer.cs =====
+using System;
+using System.Collections.Generic;
+
+namespace FluxLimiter;
+
+/// <summary>
+/// Deterministic simulation-only byte queue. It does not intercept operating-system traffic.
+/// Each identity and direction has an independent token bucket.
+/// </summary>
+public sealed class TrafficPacer
+{
+    private sealed class Budget
+    {
+        public double Tokens;
+        public double UpdatedAt;
+        public double Rate;
+    }
+
+    private readonly Dictionary<string, Budget> budgets = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object sync = new();
+
+    /// <summary>Returns the earliest permitted monotonic time, in seconds, for a byte chunk.</summary>
+    public double Schedule(string identity, bool download, int limitKBps, int bytes, double nowSeconds)
+    {
+        if (string.IsNullOrWhiteSpace(identity)) throw new ArgumentException("Required", nameof(identity));
+        if (limitKBps <= 0) throw new ArgumentOutOfRangeException(nameof(limitKBps));
+        if (bytes < 0) throw new ArgumentOutOfRangeException(nameof(bytes));
+        if (!double.IsFinite(nowSeconds) || nowSeconds < 0) throw new ArgumentOutOfRangeException(nameof(nowSeconds));
+        double rate = limitKBps * 1024.0;
+        string key = SharedRateLimiter.DirectionKey(identity, download);
+        lock (sync)
+        {
+            if (!budgets.TryGetValue(key, out var budget))
+            {
+                budget = new Budget { Tokens = rate, Rate = rate, UpdatedAt = nowSeconds };
+                budgets.Add(key, budget);
+            }
+            double effectiveNow = Math.Max(nowSeconds, budget.UpdatedAt);
+            if (budget.Rate != rate)
+            {
+                budget.Rate = rate;
+                budget.Tokens = Math.Min(budget.Tokens, rate);
+            }
+            budget.Tokens = Math.Min(rate, budget.Tokens + (effectiveNow - budget.UpdatedAt) * rate);
+            budget.UpdatedAt = effectiveNow;
+            // Negative tokens represent queued work. Large requests are paced rather than denied forever.
+            budget.Tokens -= bytes;
+            return budget.Tokens >= 0 ? effectiveNow : effectiveNow - budget.Tokens / rate;
+        }
+    }
+
+    public void Clear(string identity)
+    {
+        lock (sync)
+        {
+            budgets.Remove(SharedRateLimiter.DirectionKey(identity, true));
+            budgets.Remove(SharedRateLimiter.DirectionKey(identity, false));
+        }
+    }
+}
+
+
+===== FILE: tests/FluxLimiter.CoreTests/FluxLimiter.CoreTests.csproj =====
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/FluxLimiter/Models.cs" Link="Models.cs" />
+    <Compile Include="../../src/FluxLimiter/RuleCatalog.cs" Link="RuleCatalog.cs" />
+    <Compile Include="../../src/FluxLimiter/SharedRateLimiter.cs" Link="SharedRateLimiter.cs" />
+    <Compile Include="../../src/FluxLimiter/TrafficPacer.cs" Link="TrafficPacer.cs" />
+  </ItemGroup>
+</Project>
+
+
+===== FILE: tests/FluxLimiter.CoreTests/Program.cs =====
+using FluxLimiter;
+
+static void Assert(bool condition, string message)
+{
+    if (!condition) throw new Exception("FAIL: " + message);
+    Console.WriteLine("PASS: " + message);
+}
+
+var limiter = new SharedRateLimiter();
+Assert(limiter.TryConsume("app", 1, 1024, 0), "Initial 1 KB burst");
+Assert(!limiter.TryConsume("app", 1, 1, 0), "Burst exhausted");
+Assert(limiter.TryConsume("app", 1, 512, .5), "Half-second refill");
+Assert(!limiter.TryConsume("app", 1, 513, .5), "Budget enforced");
+Assert(limiter.TryConsume("app", 1, 1024, 2), "Refill capped at one second");
+Assert(!limiter.TryConsume("app", 1, 1, 2), "No accumulated unbounded burst");
+
+var shared = new SharedRateLimiter();
+Assert(shared.TryConsume("group:browser", 1, 700, 0), "Group member A");
+Assert(!shared.TryConsume("group:browser", 1, 400, 0), "Group member B shares remaining budget");
+Assert(shared.TryConsume("group:browser", 1, 324, 0), "Remaining group budget");
+Assert(shared.TryConsume("other", 1, 1024, 0), "Independent identity");
+
+var changed = new SharedRateLimiter();
+Assert(changed.TryConsume("a", 10, 1000, 0), "Initial high cap");
+Assert(!changed.TryConsume("a", 1, 1025, 0), "Lowering cap clamps burst");
+Assert(changed.TryConsume("a", 1, 1024, 0), "Lowered cap accepted");
+
+var model = new AppSettings();
+var group = new ExecutableGroup { Id = "steam", Name = "Steam", DownloadLimitKBps = 500 };
+model.Groups.Add(group);
+model.Rules.Add(new AppRule { ExecutablePath = @"C:\Apps\steam.exe", GroupId = "steam" });
+model.Rules.Add(new AppRule { ExecutablePath = @"C:\Apps\steamwebhelper.exe", GroupId = "steam" });
+Assert(RuleCatalog.Resolve(model, @"C:\Apps\steam.exe").DownKBps == 500, "Grouped app A resolves cap");
+Assert(RuleCatalog.Resolve(model, @"C:\Apps\steamwebhelper.exe").Scope == "Group: Steam", "Grouped app B resolves shared identity");
+Assert(RuleCatalog.Resolve(model, @"C:\Apps\game.exe").Scope == "Unmanaged", "Unrelated executable not grouped");
+var directions = new SharedRateLimiter();
+var downKey = SharedRateLimiter.DirectionKey("group:steam", true);
+var upKey = SharedRateLimiter.DirectionKey("group:steam", false);
+Assert(downKey != upKey, "Upload and download use different identities");
+Assert(directions.TryConsume(downKey, 1, 1024, 0), "Download bucket initial allowance");
+Assert(directions.TryConsume(upKey, 1, 1024, 0), "Upload bucket unaffected by download");
+Assert(!directions.TryConsume(downKey, 1, 1, 0), "Download budget exhausted independently");
+Assert(directions.TryConsume(downKey, 1, 1024, 1), "Download refills after one second");
+Assert(!directions.TryConsume(downKey, 1, 1, .5), "Backward time does not refill");
+
+var pacer = new TrafficPacer();
+Assert(Math.Abs(pacer.Schedule("browser", true, 1, 2048, 0) - 1) < 0.000001, "Oversized 2 KB request is paced, not permanently denied");
+Assert(Math.Abs(pacer.Schedule("browser", true, 1, 1024, 0) - 2) < 0.000001, "Same-direction queued work is serialized");
+Assert(Math.Abs(pacer.Schedule("browser", false, 1, 1024, 0)) < 0.000001, "Upload queue is independent");
+Assert(Math.Abs(pacer.Schedule("other", true, 1, 1024, 0)) < 0.000001, "Other process queue is independent");
+pacer.Clear("browser");
+Assert(Math.Abs(pacer.Schedule("browser", true, 1, 1024, 0)) < 0.000001, "Clear resets directional budget");
+
+
+Assert(RuleCatalog.ProcessKey(100, @"C:\Apps\browser.exe") != RuleCatalog.ProcessKey(101, @"C:\Apps\browser.exe"), "Same executable with different PIDs has distinct UI identity");
+Assert(RuleCatalog.NormalizePath(@" C:\Apps\browser.exe ") == RuleCatalog.NormalizePath(@"C:\Apps\browser.exe"), "Rule paths normalize consistently");
+Assert(!RuleCatalog.ValidLimit(0) && !RuleCatalog.ValidLimit(-1) && RuleCatalog.ValidLimit(null) && RuleCatalog.ValidLimit(1), "Limit validation rejects zero and negatives");
+
+Console.WriteLine("All deterministic core tests passed. No OS network enforcement tested.");
+
+
+===== GEMINI ROUND 3 REVIEW PROMPT =====
+You are performing Round 3 of an adversarial source-code audit of FluxLimiter.
+
+FROZEN SOURCE COMMIT:
+d65295df880228aea084fc486cba7bef6ac41cb0
+
+CI RUN:
+39672844910 — SUCCESS.
+Do not treat green CI as proof of runtime correctness.
+
+ROUND 2 previously returned REJECT.
+Its two newly identified blocking findings were:
+- P0-3: fire-and-forget ReloadAsync reentrancy could drop the final search/filter state.
+- P1-4: settingsSaveDisabled was not enforced by every settings write path.
+
+Round 2 also reported:
+- P0-2 partially fixed: remaining absolute-coordinate/DPI risks.
+- P1-3 partially fixed: Rows.Clear refresh architecture remains fragile.
+- P2-2 not fixed: shell arguments were manually concatenated.
+- P2-4: TableLayoutPanel first-row height/margin clipping.
+- P2-1 virtual-adapter accounting concern.
+- P2-3 limiter dictionary lifetime concern.
+- P3-1 alleged uint counter wrap concern.
+- P3-2 rule-dialog DPI/layout concern.
+
+CHANGES MADE FOR THIS ROUND:
+1. Added a 300 ms search debounce timer.
+2. Added refreshQueued and QueueReload() so refresh requests received while a scan is running are not silently discarded; a final queued refresh is scheduled after the active scan finishes.
+3. Filter changes now go through QueueReload().
+4. Centralized settings writes through TrySaveSettings(), which checks settingsSaveDisabled before calling SettingsStore.Save().
+5. SaveInlineRule, EditRule, and ToggleBlockSelected were intended to use the centralized save path. VERIFY THIS FROM SOURCE; do not trust this statement.
+6. Increased the dashboard content first-row allocation from 166 to 182 to account for the header margin.
+7. Replaced manually concatenated explorer/rundll32 argument strings with ProcessStartInfo.ArgumentList.
+
+IMPORTANT REVIEW RULES:
+- Verify the actual code. Do not simply repeat prior findings.
+- Specifically inspect whether the async queue logic can recurse indefinitely, race, invoke after disposal, throw unobserved exceptions, or display stale snapshots.
+- Verify that EVERY settings mutation/write path is protected. Check whether in-memory settings can still be mutated before a failed/disabled save and leave UI state inconsistent.
+- Verify search debounce behavior during fast typing, filter changes, timer refreshes, grid editing, form closing, and long process scans.
+- Re-check the DataGridView identity logic with many Brave/Chrome processes sharing one executable.
+- Re-check context-menu targeting across asynchronous refresh.
+- Re-check CSV after the explicit six-field mapping.
+- Re-check SettingsStore corrupt-file preservation, timestamp collisions, permission failures, .tmp/.bak behavior, and whether recovery can still destroy data.
+- Re-check DPI/layout. Distinguish major structural DPI failures from merely imperfect cosmetic scaling.
+- Re-check ProcessStartInfo.ArgumentList usage for explorer.exe and rundll32.exe and whether the command semantics are actually valid on Windows.
+- Do NOT blindly demand filtering all virtual adapters by name. Analyze physical + VPN + Hyper-V/WSL scenarios and propose a robust accounting policy if there is a real double-count risk.
+- Re-evaluate the prior P3-1 counter-wrap claim against the actual .NET API types. If the prior finding assumed 32-bit counters incorrectly, mark it INVALID/OVERSTATED rather than repeating it.
+- SharedRateLimiter/TrafficPacer are simulation/scheduler components, not OS enforcement. Judge their dictionary lifetime according to their actual current key usage and likely future service usage.
+- Known future limitations (real OS throttling/blocking/per-app attribution/history) are NOT by themselves Round 3 bugs.
+
+REQUIRED OUTPUT:
+
+## ROUND 3 RELEASE VERDICT
+Choose exactly one:
+REJECT
+INTERNAL PREVIEW
+TESTABLE BETA
+RELEASE CANDIDATE
+
+## ROUND 2 FIX VERIFICATION
+Table:
+ID | Verdict (FIXED / PARTIALLY FIXED / NOT FIXED / INVALID-OVERSTATED) | Exact evidence | Remaining action
+
+At minimum include P0-3, P1-4, P0-2, P1-3, P2-2, P2-4, P2-1, P2-3, P3-1, P3-2.
+
+## NEW FINDINGS
+Group as P0 / P1 / P2 / P3.
+For each: ID, severity, file, method/area, problem, exact code evidence, realistic failure scenario, recommended fix, automated-test requirement.
+
+## REGRESSION CHECK
+Explicitly answer:
+- Can final search text be lost?
+- Can filter state be lost?
+- Can concurrent refreshes overlap?
+- Can a queued refresh run after disposal?
+- Can context menu target a different process?
+- Can disabled settings saving be bypassed?
+- Can failed saving leave in-memory rule state different from disk?
+- Does CSV still have header/data mismatch?
+- Are shell actions now safely and correctly invoked?
+- Is the dashboard structurally usable at 125/150/175/200% DPI?
+
+## TOP FIXES IN IMPLEMENTATION ORDER
+
+## SCORECARD
+Architecture /10
+Correctness /10
+UI Implementation /10
+Test Coverage /10
+Performance/Responsiveness /10
+Security/Resilience /10
+Product Completeness /10
+
+## SHOULD THE OWNER DOWNLOAD AND MANUALLY TEST THIS BUILD NOW?
+YES or NO, with exact blocking reasons if NO.
+
+Be strict, source-based, and concise enough that each finding is independently actionable.

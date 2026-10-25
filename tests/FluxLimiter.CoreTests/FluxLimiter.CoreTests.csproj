@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/FluxLimiter/Models.cs" Link="Models.cs" />
+    <Compile Include="../../src/FluxLimiter/RuleCatalog.cs" Link="RuleCatalog.cs" />
+    <Compile Include="../../src/FluxLimiter/SharedRateLimiter.cs" Link="SharedRateLimiter.cs" />
+    <Compile Include="../../src/FluxLimiter/TrafficPacer.cs" Link="TrafficPacer.cs" />
+    <Compile Include="../../src/FluxLimiter/TrafficCollector.cs" Link="TrafficCollector.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="3.1.17" />
+  </ItemGroup>
+</Project>

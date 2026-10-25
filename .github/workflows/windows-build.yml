@@ -1,0 +1,41 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main, "dev/**", "review/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Restore UI
+        run: dotnet restore src/FluxLimiter/FluxLimiter.csproj
+      - name: Restore service
+        run: dotnet restore src/FluxLimiter.Service/FluxLimiter.Service.csproj
+      - name: Build UI
+        run: dotnet build src/FluxLimiter/FluxLimiter.csproj -c Release --no-restore
+      - name: Build service
+        run: dotnet build src/FluxLimiter.Service/FluxLimiter.Service.csproj -c Release --no-restore
+      - name: Run deterministic scheduler tests
+        run: dotnet run --project tests/FluxLimiter.CoreTests/FluxLimiter.CoreTests.csproj -c Release
+      - name: Run IPC contract tests
+        run: dotnet run --project tests/FluxLimiter.IpcTests/FluxLimiter.IpcTests.csproj -c Release
+      - name: Publish portable executable
+        run: dotnet publish src/FluxLimiter/FluxLimiter.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:EnableWindowsTargeting=true -o dist
+      - name: Publish service
+        run: dotnet publish src/FluxLimiter.Service/FluxLimiter.Service.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:EnableWindowsTargeting=true -o dist-service
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FluxLimiter-win-x64
+          path: dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FluxLimiter-Service-win-x64
+          path: dist-service/
