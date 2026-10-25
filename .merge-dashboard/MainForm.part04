@@ -1,0 +1,185 @@
+            var groups = GroupByExecutable(filteredSnapshots);
+
+            var rows = groups.Select(p =>
+            {
+                var resolved = RuleCatalog.Resolve(settings, p.Path);
+                string display = p.Pids.Count > 1 ? p.Name + " (" + p.Pids.Count.ToString(CultureInfo.InvariantCulture) + ")" : p.Name;
+                var rate = traffic.GetRate(p.Pids);
+                var total = traffic.GetTotal(p.Pids);
+                bool isIdle = !resolved.Blocked && rate.DownloadKBps < 0.1 && rate.UploadKBps < 0.1;
+                string statusText = resolved.Blocked ? "● Blocked" : isIdle ? "● Idle" : "● Active";
+                string ruleLabel = resolved.Blocked ? "Blocked" : (resolved.DownKBps.HasValue || resolved.UpKBps.HasValue) ? "Limit" : "—";
+
+                return new object?[]
+                {
+                    ExecutableIcon(p.Path), display, statusText,
+                    rate.HasData ? FormatCardSpeed(rate.DownloadKBps) : "0 Kbps",
+                    rate.HasData ? FormatCardSpeed(rate.UploadKBps) : "0 Kbps",
+                    total.HasData ? FormatBytes(total.TotalBytes) : "0 MB",
+                    resolved.DownKBps.HasValue ? resolved.DownKBps.Value.ToString(CultureInfo.InvariantCulture) + " KB/s" : "Unlimited",
+                    resolved.UpKBps.HasValue ? resolved.UpKBps.Value.ToString(CultureInfo.InvariantCulture) + " KB/s" : "Unlimited",
+                    ruleLabel, "•••", string.Join(", ", p.Pids), p.Path
+                };
+            }).ToList();
+
+            grid.SuspendLayout();
+            try
+            {
+                var existing = grid.Rows.Cast<DataGridViewRow>().Where(r => r.Tag is ProcessGroup).ToDictionary(r => ((ProcessGroup)r.Tag!).Key, StringComparer.OrdinalIgnoreCase);
+                var liveKeys = new HashSet<string>(groups.Select(g => g.Key), StringComparer.OrdinalIgnoreCase);
+                foreach (var stale in existing.Where(x => !liveKeys.Contains(x.Key)).Select(x => x.Value).ToList()) grid.Rows.Remove(stale);
+                int selectedIndex = -1;
+                for (int i = 0; i < rows.Count; i++)
+                {
+                    DataGridViewRow target;
+                    if (existing.TryGetValue(groups[i].Key, out var current) && current.DataGridView is not null)
+                    {
+                        target = current;
+                        for (int c = 0; c < rows[i].Length; c++) if (!Equals(target.Cells[c].Value, rows[i][c])) target.Cells[c].Value = rows[i][c];
+                    }
+                    else { int added = grid.Rows.Add(rows[i]); target = grid.Rows[added]; }
+                    target.Tag = groups[i];
+                    if (selectedKey is not null && string.Equals(groups[i].Key, selectedKey, StringComparison.OrdinalIgnoreCase)) selectedIndex = target.Index;
+                }
+                grid.ClearSelection();
+                if (selectedIndex >= 0) { grid.Rows[selectedIndex].Selected = true; grid.CurrentCell = grid.Rows[selectedIndex].Cells["app"]; }
+                if (firstVisible >= 0 && firstVisible < grid.Rows.Count) grid.FirstDisplayedScrollingRowIndex = firstVisible;
+            }
+            finally { grid.ResumeLayout(); }
+        }
+        finally
+        {
+            reloading = false;
+            if (refreshQueued && !IsDisposed) { refreshQueued = false; BeginInvoke((Action)QueueReload); }
+        }
+    }
+
+    private Image? ExecutableIcon(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        lock (iconCache) { if (iconCache.TryGetValue(path, out var cached)) return cached; }
+        Image? image = null;
+        try { if (File.Exists(path)) { using var icon = Icon.ExtractAssociatedIcon(path); image = icon?.ToBitmap(); } }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception) { }
+        lock (iconCache) { iconCache[path] = image; }
+        return image;
+    }
+
+    private List<ProcessRow> SnapshotAllProcesses()
+    {
+        string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        if (!windows.EndsWith(Path.DirectorySeparatorChar)) windows += Path.DirectorySeparatorChar;
+        var rows = new List<ProcessRow>();
+        foreach (var p in Process.GetProcesses())
+        {
+            try
+            {
+                string name = p.ProcessName; string path; long startTicks;
+                try { startTicks = p.StartTime.ToUniversalTime().Ticks; } catch { startTicks = 0; }
+                var cacheKey = (p.Id, startTicks);
+                lock (processPathCache)
+                {
+                    if (!processPathCache.TryGetValue(cacheKey, out path!))
+                    {
+                        try { path = p.MainModule?.FileName ?? ""; } catch { path = ""; }
+                        processPathCache[cacheKey] = path;
+                    }
+                }
+                bool isSystem = path.Length == 0 || path.StartsWith(windows, StringComparison.OrdinalIgnoreCase);
+                rows.Add(new ProcessRow(name, p.Id, path, isSystem, startTicks));
+            }
+            catch (InvalidOperationException) { }
+            catch (System.ComponentModel.Win32Exception) { }
+            finally { p.Dispose(); }
+        }
+        return rows;
+    }
+
+    private List<ProcessRow> FilterProcesses(IEnumerable<ProcessRow> rows, string query, int filterIndex) =>
+        rows.Where(p =>
+        {
+            bool matchQuery = p.Name.Contains(query, StringComparison.OrdinalIgnoreCase) || p.Path.Contains(query, StringComparison.OrdinalIgnoreCase);
+            if (!matchQuery) return false;
+            if (filterIndex == 1) return !p.IsSystem;
+            if (filterIndex == 2) return p.IsSystem;
+            if (filterIndex == 3)
+            {
+                var r = RuleCatalog.Resolve(settings, p.Path);
+                return r.Blocked || r.DownKBps.HasValue || r.UpKBps.HasValue;
+            }
+            return true;
+        }).ToList();
+
+    private void PruneProcessPathCache(IEnumerable<ProcessRow> liveProcesses)
+    {
+        var liveKeys = liveProcesses.Select(p => (p.Pid, p.StartTicks)).ToHashSet();
+        lock (processPathCache) { foreach (var key in processPathCache.Keys.Where(k => !liveKeys.Contains(k)).ToList()) processPathCache.Remove(key); }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024) return bytes.ToString(CultureInfo.InvariantCulture) + " B";
+        double value = bytes / 1024d;
+        if (value < 1024) return value.ToString("F1", CultureInfo.InvariantCulture) + " KB";
+        value /= 1024d;
+        if (value < 1024) return value.ToString("F1", CultureInfo.InvariantCulture) + " MB";
+        return (value / 1024d).ToString("F2", CultureInfo.InvariantCulture) + " GB";
+    }
+
+    private void Reload() => QueueReload();
+
+    private void SaveInlineRule(int rowIndex)
+    {
+        string path = grid.Rows[rowIndex].Cells["path"].Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(path)) return;
+        if (!TryLimit(grid.Rows[rowIndex].Cells["down"].Value?.ToString() ?? "", out var down) || !TryLimit(grid.Rows[rowIndex].Cells["up"].Value?.ToString() ?? "", out var up))
+        {
+            MessageBox.Show("Use a positive number in KB/s (or Mbps), or Unlimited.", "Invalid limit"); Reload(); return;
+        }
+        TryPersistMutation(() => UpsertOrRemoveRule(path, down, up, RuleCatalog.Find(settings, path)?.Blocked ?? false)); Reload();
+    }
+
+    private void UpsertOrRemoveRule(string path, int? downKBps, int? upKBps, bool blocked)
+    {
+        var existing = RuleCatalog.Find(settings, path);
+        if (downKBps is null && upKBps is null && !blocked && string.IsNullOrWhiteSpace(existing?.GroupId))
+        {
+            if (existing is not null) settings.Rules.Remove(existing);
+            return;
+        }
+        var target = existing ?? new AppRule { ExecutablePath = path };
+        target.DownloadLimitKBps = downKBps; target.UploadLimitKBps = upKBps; target.Blocked = blocked;
+        if (existing is null) settings.Rules.Add(target);
+    }
+
+    private void EditRule(int index)
+    {
+        string path = grid.Rows[index].Cells["path"].Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(path)) { MessageBox.Show("Executable path unavailable. Try running FluxLimiter as administrator.", "FluxLimiter"); return; }
+        var rule = RuleCatalog.Find(settings, path);
+        using var dialog = new Form { Text = "Rule — " + Path.GetFileName(path), ClientSize = new Size(460, 250), StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, BackColor = cardBg, ForeColor = ink, Font = Font, AutoScaleMode = AutoScaleMode.Dpi };
+        var formLayout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 2, RowCount = 5, BackColor = cardBg };
+        formLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42)); formLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
+        formLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40)); formLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40)); formLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36)); formLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); formLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        var dl = new ComboBox { Dock = DockStyle.Fill, BackColor = bg, ForeColor = ink, Margin = new Padding(6) };
+        dl.Items.AddRange(new object[] { "Unlimited", "256 KB/s", "512 KB/s", "1024 KB/s", "2048 KB/s", "5120 KB/s" }); dl.Text = rule?.DownloadLimitKBps?.ToString(CultureInfo.InvariantCulture) ?? "Unlimited";
+        var ul = new ComboBox { Dock = DockStyle.Fill, BackColor = bg, ForeColor = ink, Margin = new Padding(6) };
+        ul.Items.AddRange(new object[] { "Unlimited", "128 KB/s", "256 KB/s", "512 KB/s", "1024 KB/s" }); ul.Text = rule?.UploadLimitKBps?.ToString(CultureInfo.InvariantCulture) ?? "Unlimited";
+        var blocked = new CheckBox { Text = "Block application via Windows Firewall", Checked = rule?.Blocked ?? false, AutoSize = true, Anchor = AnchorStyles.Left };
+        formLayout.Controls.Add(new Label { Text = "Limit Download", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0); formLayout.Controls.Add(dl, 1, 0);
+        formLayout.Controls.Add(new Label { Text = "Limit Upload", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1); formLayout.Controls.Add(ul, 1, 1); formLayout.Controls.Add(blocked, 1, 2);
+        var note = new Label { Text = "Select Unlimited and uncheck Block to remove the rule.", Dock = DockStyle.Fill, AutoSize = false, ForeColor = mutedInk, TextAlign = ContentAlignment.MiddleLeft };
+        formLayout.SetColumnSpan(note, 2); formLayout.Controls.Add(note, 0, 3);
+        var save = new Button { Text = "Save Rule", DialogResult = DialogResult.OK, BackColor = Color.FromArgb(11, 88, 168), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Dock = DockStyle.Right, Width = 120, Margin = new Padding(6) };
+        save.FlatAppearance.BorderSize = 0; formLayout.Controls.Add(save, 1, 4); dialog.Controls.Add(formLayout); dialog.AcceptButton = save;
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        if (!TryLimit(dl.Text, out var down) || !TryLimit(ul.Text, out var up)) { MessageBox.Show("Enter a positive whole number in KB/s, or Unlimited.", "Invalid limit"); return; }
+        TryPersistMutation(() => UpsertOrRemoveRule(path, down, up, blocked.Checked)); Reload();
+    }
+
+    private static bool TryLimit(string value, out int? limit)
+    {
+        limit = null; string cleaned = value.Trim();
+        if (string.IsNullOrWhiteSpace(cleaned) || cleaned.Equals("Unlimited", StringComparison.OrdinalIgnoreCase)) return true;
+        cleaned = cleaned.Replace("KB/s", "", StringComparison.OrdinalIgnoreCase).Replace("Kbps", "", StringComparison.OrdinalIgnoreCase).Trim();
+        if (!int.TryParse(cleaned, NumberStyles.Integer, CultureInfo.InvariantCulture, out int n) || n <= 0) return false;
