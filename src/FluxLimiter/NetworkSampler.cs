@@ -3,7 +3,6 @@ using System.Net.NetworkInformation;
 
 namespace FluxLimiter;
 
-// Device-level throughput only. This is a UI summary, not per-app accounting.
 public sealed class NetworkSampler
 {
     private string? selectedAdapterId;
@@ -13,9 +12,13 @@ public sealed class NetworkSampler
 
     public string CurrentAdapterName { get; private set; } = "Detecting...";
     public bool IsConnected { get; private set; }
+    public long LastReceivedDeltaBytes { get; private set; }
+    public long LastSentDeltaBytes { get; private set; }
 
     public (double DownloadKBps, double UploadKBps) Sample()
     {
+        LastReceivedDeltaBytes = 0;
+        LastSentDeltaBytes = 0;
         long now = Stopwatch.GetTimestamp();
         double elapsed = lastTick == 0 ? 0 : (now - lastTick) / (double)Stopwatch.Frequency;
         var adapter = SelectInternetAdapter();
@@ -29,7 +32,6 @@ public sealed class NetworkSampler
 
         CurrentAdapterName = string.IsNullOrWhiteSpace(adapter.Name) ? adapter.Description : adapter.Name;
         IsConnected = true;
-
         try
         {
             var stats = adapter.GetIPStatistics();
@@ -48,6 +50,8 @@ public sealed class NetworkSampler
             previousSent = stats.BytesSent;
             lastTick = now;
             if (received < 0 || sent < 0) return (0, 0);
+            LastReceivedDeltaBytes = received;
+            LastSentDeltaBytes = sent;
             return (received / elapsed / 1024d, sent / elapsed / 1024d);
         }
         catch (NetworkInformationException)
@@ -58,27 +62,15 @@ public sealed class NetworkSampler
         }
     }
 
-    private static NetworkInterface? SelectInternetAdapter()
-    {
-        return NetworkInterface.GetAllNetworkInterfaces()
-            .Where(a => a.OperationalStatus == OperationalStatus.Up &&
-                        a.NetworkInterfaceType != NetworkInterfaceType.Loopback &&
-                        a.NetworkInterfaceType != NetworkInterfaceType.Tunnel)
+    private static NetworkInterface? SelectInternetAdapter() =>
+        NetworkInterface.GetAllNetworkInterfaces()
+            .Where(a => a.OperationalStatus == OperationalStatus.Up && a.NetworkInterfaceType != NetworkInterfaceType.Loopback && a.NetworkInterfaceType != NetworkInterfaceType.Tunnel)
             .Select(a => (Adapter: a, HasGateway: HasDefaultGateway(a), Rank: PhysicalRank(a)))
-            .Where(x => x.HasGateway)
-            .OrderBy(x => x.Rank)
-            .Select(x => x.Adapter)
-            .FirstOrDefault();
-    }
+            .Where(x => x.HasGateway).OrderBy(x => x.Rank).Select(x => x.Adapter).FirstOrDefault();
 
     private static bool HasDefaultGateway(NetworkInterface adapter)
     {
-        try
-        {
-            return adapter.GetIPProperties().GatewayAddresses.Any(g =>
-                !g.Address.Equals(System.Net.IPAddress.Any) &&
-                !g.Address.Equals(System.Net.IPAddress.IPv6Any));
-        }
+        try { return adapter.GetIPProperties().GatewayAddresses.Any(g => !g.Address.Equals(System.Net.IPAddress.Any) && !g.Address.Equals(System.Net.IPAddress.IPv6Any)); }
         catch (NetworkInformationException) { return false; }
     }
 
@@ -94,5 +86,6 @@ public sealed class NetworkSampler
         selectedAdapterId = null;
         previousReceived = previousSent = 0;
         lastTick = now;
+        LastReceivedDeltaBytes = LastSentDeltaBytes = 0;
     }
 }
