@@ -50,7 +50,6 @@ internal static class Program
                             }));
                     }
                     catch (InvalidOperationException) { }
-                    catch (ObjectDisposedException) { }
                 }
             }) { IsBackground = true, Name = "FluxLimiter second-launch listener" };
             listener.Start();
