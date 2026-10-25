@@ -1,0 +1,29 @@
+name: Apply dashboard source
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.merge-dashboard/**'
+      - '.github/workflows/apply-dashboard.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Assemble dashboard MainForm
+        shell: bash
+        run: |
+          cat .merge-dashboard/MainForm.part* > src/FluxLimiter/MainForm.cs
+          rm -rf .merge-dashboard
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/FluxLimiter/MainForm.cs .merge-dashboard
+          git commit -m "Merge complete dashboard source"
+          git push origin HEAD:main
