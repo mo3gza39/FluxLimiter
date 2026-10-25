@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Net.NetworkInformation;
-using System.Net.Sockets;
 
 namespace FluxLimiter;
 
@@ -12,17 +11,27 @@ public sealed class NetworkSampler
     private long previousSent;
     private long lastTick;
 
+    public string CurrentAdapterName { get; private set; } = "Detecting...";
+    public bool IsConnected { get; private set; }
+
     public (double DownloadKBps, double UploadKBps) Sample()
     {
         long now = Stopwatch.GetTimestamp();
         double elapsed = lastTick == 0 ? 0 : (now - lastTick) / (double)Stopwatch.Frequency;
         var adapter = SelectInternetAdapter();
-        if (adapter is null) { Reset(now); return (0, 0); }
+        if (adapter is null)
+        {
+            CurrentAdapterName = "No active network";
+            IsConnected = false;
+            Reset(now);
+            return (0, 0);
+        }
+
+        CurrentAdapterName = string.IsNullOrWhiteSpace(adapter.Name) ? adapter.Description : adapter.Name;
+        IsConnected = true;
 
         try
         {
-            // GetIPStatistics exposes the platform's current IP counters and avoids the legacy
-            // IPv4-only selection used by the first prototype.
             var stats = adapter.GetIPStatistics();
             if (!string.Equals(selectedAdapterId, adapter.Id, StringComparison.OrdinalIgnoreCase) || elapsed <= 0)
             {
@@ -41,15 +50,16 @@ public sealed class NetworkSampler
             if (received < 0 || sent < 0) return (0, 0);
             return (received / elapsed / 1024d, sent / elapsed / 1024d);
         }
-        catch (NetworkInformationException) { Reset(now); return (0, 0); }
+        catch (NetworkInformationException)
+        {
+            IsConnected = false;
+            Reset(now);
+            return (0, 0);
+        }
     }
 
     private static NetworkInterface? SelectInternetAdapter()
     {
-        // Prefer an operational interface carrying a default route. Do not rank by link speed:
-        // virtual/Hyper-V adapters commonly advertise 10+ Gbit and would win incorrectly.
-        // Route metric selection is left to the Windows integration layer; this fallback prefers
-        // physical Wi-Fi/Ethernet over virtual/unknown interfaces and supports IPv4 or IPv6 gateways.
         return NetworkInterface.GetAllNetworkInterfaces()
             .Where(a => a.OperationalStatus == OperationalStatus.Up &&
                         a.NetworkInterfaceType != NetworkInterfaceType.Loopback &&
