@@ -68,4 +68,24 @@ Assert(TrafficCollector.DirectionOf(59, "Unknown") == TrafficCollector.Direction
 Assert(TrafficCollector.DirectionOf("TCPIP/Datareceived") == TrafficCollector.Direction.Receive, "ETW Datareceived variant");
 Assert(TrafficCollector.DirectionOf("UDPIP/DatasentoverUDPprotocol.") == TrafficCollector.Direction.Send, "ETW UDP sent variant with trailing dot");
 
+
+var dailyRoot = Path.Combine(Path.GetTempPath(), "FluxLimiter-tests-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(dailyRoot);
+try
+{
+    var dailyPath = Path.Combine(dailyRoot, "daily.json");
+    var today = new DateTime(2026, 10, 24);
+    Assert(DailyUsageStore.Load(dailyPath, today) == (0L, 0L), "Missing daily file reads as zero usage");
+    DailyUsageStore.Add(dailyPath, today, 5 * 1024 * 1024, 1024);
+    DailyUsageStore.Add(dailyPath, today, 5 * 1024 * 1024, 2048);
+    var totals = DailyUsageStore.Load(dailyPath, today);
+    Assert(totals == (10L * 1024 * 1024, 3L * 1024), "Daily usage accumulates deltas");
+    DailyUsageStore.Add(dailyPath, new DateTime(2026, 10, 25), 1024, 0);
+    DailyUsageStore.Add(dailyPath, new DateTime(2026, 11, 1), 7777, 8888);
+    var october = DailyUsageStore.LoadMonth(dailyPath, new DateTime(2026, 10, 1));
+    Assert(october.ReceivedBytes == 10 * 1024 * 1024 + 1024 && october.SentBytes == 3 * 1024, "LoadMonth sums only the requested calendar month");
+    Assert(DailyUsageStore.LoadMonth(dailyPath, new DateTime(2025, 10, 24)) == (0L, 0L), "LoadMonth does not mix the same month of another year");
+}
+finally { try { Directory.Delete(dailyRoot, true); } catch { } }
+
 Console.WriteLine("All deterministic core tests passed. No OS network enforcement tested.");
