@@ -658,11 +658,24 @@ public sealed class MainForm : Form
             upSparkHistory.Add((float)currentUpKBps); if (upSparkHistory.Count > 12) upSparkHistory.RemoveAt(0);
             taskbarOverlay.UpdateSpeeds(currentDownKBps, currentUpKBps);
             dashboard.SetSpeeds(currentDownKBps, currentUpKBps);
+            UpdateVisibleApplicationRates();
             AccumulateDeviceUsage(network.LastReceivedDeltaBytes, network.LastSentDeltaBytes);
         }
         catch (Exception ex) when (ex is System.Net.NetworkInformation.NetworkInformationException or InvalidOperationException) { currentDownKBps = 0; currentUpKBps = 0; }
         PushDashboardUsage();
         dashboard.SetFooter(traffic.Status);
+    }
+
+    private void UpdateVisibleApplicationRates()
+    {
+        if (reloading || grid.IsDisposed) return;
+        foreach (DataGridViewRow row in grid.Rows)
+        {
+            if (row.Tag is not ProcessGroup group) continue;
+            var rate = traffic.GetRate(group.Pids);
+            row.Cells["download"].Value = rate.HasData ? Gfx.Speed(rate.DownloadKBps) : "0 KB/s";
+            row.Cells["upload"].Value = rate.HasData ? Gfx.Speed(rate.UploadKBps) : "0 KB/s";
+        }
     }
 
     private void LoadPersistedUsage()
@@ -775,8 +788,8 @@ public sealed class MainForm : Form
                 return new object?[]
                 {
                     ExecutableIcon(p.Path), display, statusText,
-                    rate.HasData ? FormatCardSpeed(rate.DownloadKBps) : "0 Kbps",
-                    rate.HasData ? FormatCardSpeed(rate.UploadKBps) : "0 Kbps",
+                    rate.HasData ? Gfx.Speed(rate.DownloadKBps) : "0 KB/s",
+                    rate.HasData ? Gfx.Speed(rate.UploadKBps) : "0 KB/s",
                     total.HasData ? FormatBytes(total.TotalBytes) : "0 MB",
                     resolved.DownKBps.HasValue ? resolved.DownKBps.Value.ToString(CultureInfo.InvariantCulture) + " KB/s" : "Unlimited",
                     resolved.UpKBps.HasValue ? resolved.UpKBps.Value.ToString(CultureInfo.InvariantCulture) + " KB/s" : "Unlimited",
