@@ -33,7 +33,16 @@ internal static class Program
             ApplicationConfiguration.Initialize();
             using var showSignal = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName);
             using var listenerStop = new CancellationTokenSource();
-            var mainForm = new MainForm();
+            MainForm mainForm;
+            try
+            {
+                mainForm = new MainForm();
+            }
+            catch (Exception ex)
+            {
+                ReportStartupFailure(ex);
+                return;
+            }
             var listener = new Thread(() =>
             {
                 while (!listenerStop.IsCancellationRequested)
@@ -62,4 +71,20 @@ internal static class Program
             singleInstance?.Dispose();
         }
     }
+    private static void ReportStartupFailure(Exception ex)
+    {
+        try
+        {
+            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FluxLimiter");
+            Directory.CreateDirectory(dir);
+            string logPath = Path.Combine(dir, "startup-crash.log");
+            File.AppendAllText(logPath, $"[{DateTimeOffset.Now:O}] {ex}\\n\\n");
+            MessageBox.Show($"FluxLimiter could not start.\\n\\nA crash log was written to:\\n{logPath}\\n\\n{ex.GetType().Name}: {ex.Message}", "FluxLimiter startup error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        catch
+        {
+            MessageBox.Show($"FluxLimiter could not start.\\n\\n{ex.GetType().Name}: {ex.Message}", "FluxLimiter startup error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
 }
