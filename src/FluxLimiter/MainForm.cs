@@ -97,7 +97,7 @@ public sealed class MainForm : Form
 
         // System Tray + Taskbar Speed Overlay next to the Windows Clock
         trayMenu = BuildTrayMenu();
-        taskbarOverlay = new TaskbarSpeedOverlay(trayMenu);
+        taskbarOverlay = new TaskbarSpeedOverlay(trayMenu) { UseBitsPerSecond = false };
         trayIcon = new NotifyIcon
         {
             Text = "FluxLimiter — Network Control",
@@ -223,7 +223,6 @@ public sealed class MainForm : Form
             }
         };
         menu.Items.Add(toggleOverlay);
-        taskbarOverlay.UseBitsPerSecond = false;
         var unitToggle = new ToolStripMenuItem("Display Speeds in Mbps / Kbps") { Checked = false, CheckOnClick = true };
         unitToggle.CheckedChanged += (_, _) => taskbarOverlay.UseBitsPerSecond = unitToggle.Checked;
         menu.Items.Add(unitToggle);
