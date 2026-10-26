@@ -71,13 +71,18 @@ internal sealed class DashboardView:Panel
 internal sealed class SevenDayChart:Control
 {
  IReadOnlyList<DayBars> data=Array.Empty<DayBars>();
+ readonly Font labelFont=new("Segoe UI Variable Text",8.5f), legendFont=new("Segoe UI Variable Text",8.5f,FontStyle.Bold);
  public SevenDayChart(){DoubleBuffered=true;}
  public void SetData(IReadOnlyList<DayBars> value){data=value;Invalidate();}
  protected override void OnPaint(PaintEventArgs e)
  {
   base.OnPaint(e);if(data.Count==0)return;var g=e.Graphics;g.SmoothingMode=System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-  var area=new RectangleF(18,10,Math.Max(1,Width-32),Math.Max(1,Height-34));long max=Math.Max(1,data.Max(x=>x.Rx+x.Tx));float slot=area.Width/data.Count;float bar=Math.Min(24,slot*.38f);
-  using var gridPen=new Pen(Color.FromArgb(24,39,61));for(int i=0;i<3;i++){float y=area.Top+(area.Height*i/2);g.DrawLine(gridPen,area.Left,y,area.Right,y);}
-  for(int i=0;i<data.Count;i++){long total=data[i].Rx+data[i].Tx;float h=(float)(area.Height*(total/(double)max));float x=area.Left+i*slot+(slot-bar)/2;float y=area.Bottom-h;using var b=new SolidBrush(Palette.Blue);g.FillRectangle(b,x,y,bar,h);string day=data[i].Day.ToString("ddd",CultureInfo.InvariantCulture);TextRenderer.DrawText(g,day,Font,new Rectangle((int)(area.Left+i*slot),(int)area.Bottom+4,(int)slot,18),Palette.Muted,TextFormatFlags.HorizontalCenter|TextFormatFlags.NoPadding);}
+  var area=new RectangleF(20,32,Math.Max(1,Width-40),Math.Max(1,Height-58));long max=Math.Max(1,data.Max(x=>Math.Max(x.Rx,x.Tx)));float slot=area.Width/data.Count;float bw=Math.Min(14,slot*.18f);
+  using var gridPen=new Pen(Color.FromArgb(31,45,63));for(int i=0;i<4;i++){float y=area.Top+(area.Height*i/3);g.DrawLine(gridPen,area.Left,y,area.Right,y);}
+  using var db=new SolidBrush(Palette.Blue);using var ub=new SolidBrush(Palette.Green);
+  g.FillEllipse(db,area.Left,8,7,7);TextRenderer.DrawText(g,"Download",legendFont,new Point((int)area.Left+12,4),Palette.Muted);
+  g.FillEllipse(ub,area.Left+92,8,7,7);TextRenderer.DrawText(g,"Upload",legendFont,new Point((int)area.Left+104,4),Palette.Muted);
+  for(int i=0;i<data.Count;i++){var d=data[i];float dh=(float)(area.Height*(d.Rx/(double)max));float uh=(float)(area.Height*(d.Tx/(double)max));float center=area.Left+i*slot+slot/2;g.FillRectangle(db,center-bw-2,area.Bottom-dh,bw,dh);g.FillRectangle(ub,center+2,area.Bottom-uh,bw,uh);string day=d.Day.ToString("ddd",CultureInfo.InvariantCulture);TextRenderer.DrawText(g,day,labelFont,new Rectangle((int)(area.Left+i*slot),(int)area.Bottom+5,(int)slot,18),Palette.Muted,TextFormatFlags.HorizontalCenter|TextFormatFlags.NoPadding);}
  }
+ protected override void Dispose(bool disposing){if(disposing){labelFont.Dispose();legendFont.Dispose();}base.Dispose(disposing);}
 }
