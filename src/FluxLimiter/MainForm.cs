@@ -205,11 +205,32 @@ public sealed class MainForm : Form
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 
+    private sealed class FluxMenuRenderer : ToolStripProfessionalRenderer
+    {
+        public FluxMenuRenderer() : base(new FluxMenuColors()) { RoundedEdges = true; }
+        protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
+        {
+            var r = new Rectangle(4, 2, e.Item.Width - 8, e.Item.Height - 4);
+            using var b = new SolidBrush(e.Item.Selected ? Color.FromArgb(31, 49, 70) : Color.FromArgb(20, 29, 41));
+            e.Graphics.FillRectangle(b, r);
+        }
+    }
+    private sealed class FluxMenuColors : ProfessionalColorTable
+    {
+        public override Color ToolStripDropDownBackground => Color.FromArgb(20,29,41);
+        public override Color MenuBorder => Color.FromArgb(52,67,87);
+        public override Color ImageMarginGradientBegin => Color.FromArgb(20,29,41);
+        public override Color ImageMarginGradientMiddle => Color.FromArgb(20,29,41);
+        public override Color ImageMarginGradientEnd => Color.FromArgb(20,29,41);
+        public override Color SeparatorDark => Color.FromArgb(49,62,80);
+        public override Color SeparatorLight => Color.FromArgb(49,62,80);
+    }
+
     private ContextMenuStrip BuildTrayMenu()
     {
-        var menu = new ContextMenuStrip { BackColor = cardBg, ForeColor = ink, ShowImageMargin = false };
-        menu.Items.Add("Open FluxLimiter Dashboard", null, (_, _) => RestoreFromTray());
-        var toggleOverlay = new ToolStripMenuItem("Show Speed Meter Next to Clock") { Checked = true, CheckOnClick = true };
+        var menu = new ContextMenuStrip { BackColor = Color.FromArgb(20, 29, 41), ForeColor = Color.FromArgb(238, 243, 249), ShowImageMargin = true, Padding = new Padding(8), Font = new Font("Segoe UI Variable Text", 10f), Renderer = new FluxMenuRenderer() };
+        menu.Items.Add("Open FluxLimiter", null, (_, _) => RestoreFromTray());
+        var toggleOverlay = new ToolStripMenuItem("Taskbar Speed Meter") { Checked = true, CheckOnClick = true };
         toggleOverlay.CheckedChanged += (_, _) =>
         {
             if (toggleOverlay.Checked)
@@ -223,14 +244,14 @@ public sealed class MainForm : Form
             }
         };
         menu.Items.Add(toggleOverlay);
-        var unitToggle = new ToolStripMenuItem("Display Speeds in Mbps / Kbps") { Checked = false, CheckOnClick = true };
+        var unitToggle = new ToolStripMenuItem("Use Mbps / Kbps") { Checked = false, CheckOnClick = true };
         unitToggle.CheckedChanged += (_, _) => taskbarOverlay.UseBitsPerSecond = unitToggle.Checked;
         menu.Items.Add(unitToggle);
-        var closeToTray = new ToolStripMenuItem("Close button hides to tray") { Checked = settings.CloseToTray, CheckOnClick = true };
+        var closeToTray = new ToolStripMenuItem("Close to Tray") { Checked = settings.CloseToTray, CheckOnClick = true };
         closeToTray.CheckedChanged += (_, _) => { settings.CloseToTray = closeToTray.Checked; TrySaveSettings(); };
         menu.Items.Add(closeToTray);
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Exit FluxLimiter", null, (_, _) =>
+        menu.Items.Add("Exit", null, (_, _) =>
         {
             exitingApplication = true;
             Close();
