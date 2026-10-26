@@ -13,9 +13,11 @@ public sealed class MainForm : Form
     private readonly AppSettings settings = SettingsStore.Load();
     private readonly NetworkSampler network = new();
     private readonly TrafficCollector traffic = new();
-    private readonly BufferedDataGridView grid = new();
-    private readonly TextBox search = new();
-    private readonly ComboBox filter = new();
+    private readonly DashboardView dashboard = new();
+    private readonly SidebarView sidebarView = new();
+    private DataGridView grid => dashboard.Grid;
+    private TextBox search => dashboard.SearchBox;
+    private ComboBox filter => dashboard.FilterBox;
     private readonly System.Windows.Forms.Timer refresh = new() { Interval = 3500 };
     private readonly System.Windows.Forms.Timer searchDebounce = new() { Interval = 280 };
     private readonly System.Windows.Forms.Timer speedTimer = new() { Interval = 1000 };
@@ -28,7 +30,7 @@ public sealed class MainForm : Form
 
     private readonly Dictionary<string, Button> navButtons = new(StringComparer.OrdinalIgnoreCase);
     private string activeNavPage = "Dashboard";
-    private Panel? dashboardPage;
+    private Control? dashboardPage;
     private Panel? pageHost;
     private readonly Label status = new();
     private readonly Label networkAdapterLabel = new();
@@ -83,16 +85,15 @@ public sealed class MainForm : Form
     public MainForm()
     {
         Text = "FluxLimiter";
-        Width = 1440;
-        Height = 900;
-        MinimumSize = new Size(1180, 740);
+        AutoScaleMode = AutoScaleMode.None;
+        float uiScale = DeviceDpi / 96f;
+        ClientSize = new Size((int)(1440 * uiScale), (int)(860 * uiScale));
+        MinimumSize = new Size((int)(1180 * uiScale), (int)(740 * uiScale));
         BackColor = bg;
         ForeColor = ink;
         Font = new Font("Segoe UI", 9.5f);
         StartPosition = FormStartPosition.CenterScreen;
-        AutoScaleMode = AutoScaleMode.Dpi;
 
-        EnableDarkTitleBar();
 
         // System Tray + Taskbar Speed Overlay next to the Windows Clock
         trayMenu = BuildTrayMenu();
@@ -107,18 +108,21 @@ public sealed class MainForm : Form
         trayIcon.DoubleClick += (_, _) => RestoreFromTray();
 
         var shell = new Panel { Dock = DockStyle.Fill, BackColor = bg };
-        var sidebar = BuildSidebar();
-        dashboardPage = BuildDashboardSurface();
+        dashboardPage = dashboard;
+        dashboard.Dock = DockStyle.Fill;
 
         pageHost = new Panel { Dock = DockStyle.Fill, BackColor = bg };
         pageHost.Controls.Add(dashboardPage);
 
         shell.Controls.Add(pageHost);
-        shell.Controls.Add(sidebar);
+        shell.Controls.Add(sidebarView);
         Controls.Add(shell);
 
-        ConfigureGrid();
         SetupContextMenu();
+        sidebarView.PageSelected += NavigateTo;
+        dashboard.SeeAllClicked += (_, _) => NavigateTo("Applications");
+        dashboard.RowActionClicked += (row, action) => { if (action == RowAction.ToggleBlock) { grid.ClearSelection(); grid.Rows[row].Selected = true; grid.CurrentCell = grid.Rows[row].Cells["app"]; ToggleBlockSelected(); } else EditRule(row); };
+        dashboard.LimitChosen += OnLimitChosen;
 
         searchDebounce.Tick += (_, _) => { searchDebounce.Stop(); QueueReload(); };
         refresh.Tick += (_, _) =>
@@ -157,6 +161,36 @@ public sealed class MainForm : Form
         };
     }
 
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        EnableDarkTitleBar();
+    }
+
+    private void PushDashboardUsage()
+    {
+        var now = DateTime.Now.Date;
+        var days = Enumerable.Range(0, 7).Select(offset =>
+        {
+            var day = now.AddDays(offset - 6);
+            var usage = DailyUsageStore.Load(dailyUsagePath, day);
+            return new DayBars(day, usage.ReceivedBytes, usage.SentBytes);
+        }).ToList();
+        dashboard.SetUsage(todayReceivedBytes, todaySentBytes, monthReceivedBytes + monthSentBytes, 0, days, Array.Empty<TopApp>());
+    }
+
+    private void OnLimitChosen(int row, bool isDownload, int? kbps, bool custom)
+    {
+        if (custom) { EditRule(row); return; }
+        string path = grid.Rows[row].Cells["path"].Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(path)) { MessageBox.Show("Executable path unavailable. Try running FluxLimiter as administrator.", "FluxLimiter"); return; }
+        var rule = RuleCatalog.Find(settings, path);
+        int? down = isDownload ? kbps : rule?.DownloadLimitKBps;
+        int? up = isDownload ? rule?.UploadLimitKBps : kbps;
+        TryPersistMutation(() => UpsertOrRemoveRule(path, down, up, rule?.Blocked ?? false));
+        Reload();
+    }
+
     private void EnableDarkTitleBar()
     {
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763)) return;
@@ -189,7 +223,8 @@ public sealed class MainForm : Form
             }
         };
         menu.Items.Add(toggleOverlay);
-        var unitToggle = new ToolStripMenuItem("Display Speeds in Mbps / Kbps") { Checked = true, CheckOnClick = true };
+        taskbarOverlay.UseBitsPerSecond = false;
+        var unitToggle = new ToolStripMenuItem("Display Speeds in Mbps / Kbps") { Checked = false, CheckOnClick = true };
         unitToggle.CheckedChanged += (_, _) => taskbarOverlay.UseBitsPerSecond = unitToggle.Checked;
         menu.Items.Add(unitToggle);
         var closeToTray = new ToolStripMenuItem("Close button hides to tray") { Checked = settings.CloseToTray, CheckOnClick = true };
@@ -619,16 +654,16 @@ public sealed class MainForm : Form
         try
         {
             var rates = network.Sample(); currentDownKBps = rates.DownloadKBps; currentUpKBps = rates.UploadKBps;
-            networkAdapterLabel.Text = network.CurrentAdapterName; networkStateLabel.Text = network.IsConnected ? "Connected" : "Disconnected";
-            networkStateLabel.ForeColor = network.IsConnected ? accentGreen : Color.FromArgb(244, 63, 94);
+            dashboard.SetNetwork(network.CurrentAdapterName, network.IsConnected);
             downSparkHistory.Add((float)currentDownKBps); if (downSparkHistory.Count > 12) downSparkHistory.RemoveAt(0);
             upSparkHistory.Add((float)currentUpKBps); if (upSparkHistory.Count > 12) upSparkHistory.RemoveAt(0);
             taskbarOverlay.UpdateSpeeds(currentDownKBps, currentUpKBps);
+            dashboard.SetSpeeds(currentDownKBps, currentUpKBps);
             AccumulateDeviceUsage(network.LastReceivedDeltaBytes, network.LastSentDeltaBytes);
         }
         catch (Exception ex) when (ex is System.Net.NetworkInformation.NetworkInformationException or InvalidOperationException) { currentDownKBps = 0; currentUpKBps = 0; }
-        downloadCard?.Invalidate(); uploadCard?.Invalidate(); dailyCard?.Invalidate(); monthlyCard?.Invalidate();
-        status.Text = traffic.Status + " · Right-click an app or click Action icons (⏸ / 🛡 / ⋮)";
+        PushDashboardUsage();
+        dashboard.SetFooter(traffic.Status);
     }
 
     private void LoadPersistedUsage()
@@ -666,7 +701,7 @@ public sealed class MainForm : Form
     private void NavigateTo(string pageName)
     {
         if (pageHost is null || dashboardPage is null) return;
-        activeNavPage = pageName; foreach (var btn in navButtons.Values) btn.Invalidate();
+        activeNavPage = pageName; sidebarView.SelectedPage = pageName;
         pageHost.SuspendLayout();
         try
         {
@@ -722,8 +757,7 @@ public sealed class MainForm : Form
             var allGroups = GroupByExecutable(allSnapshots);
             await Task.Run(() => { foreach (var ip in allGroups.Select(x => x.Path).Distinct(StringComparer.OrdinalIgnoreCase)) ExecutableIcon(ip); });
             if (IsDisposed) return;
-            topAppsToday = allGroups.Select(g => (g.Name, ExecutableIcon(g.Path), Bytes: traffic.GetTotal(g.Pids).TotalBytes)).OrderByDescending(x => x.Bytes).Take(5).ToList();
-            topAppsPanel?.Invalidate();
+            topAppsToday = new(); // keep empty until ETW per-application totals are validated
             if (grid.ContextMenuStrip?.Visible == true) { refreshDeferredByContextMenu = true; return; }
             if (grid.IsCurrentCellInEditMode) return;
             var filteredSnapshots = FilterProcesses(allSnapshots, query, filterIndex);
