@@ -22,8 +22,7 @@ public sealed class TaskbarSpeedOverlay : Form
     private Point dragStart;
     private bool dragging;
     private bool manualPosition;
-    private readonly ToolTip usageTip = new() { ShowAlways = true, InitialDelay = 150, ReshowDelay = 100, AutoPopDelay = 5000 };
-    private string usageText = "Today’s Usage\n↓ 0 B   ↑ 0 B\nTotal 0 B";
+    private readonly UsagePopup usagePopup = new();
 
     public bool UseBitsPerSecond { get; set; } = true;
     public bool MonochromeText { get; set; }
@@ -46,8 +45,8 @@ public sealed class TaskbarSpeedOverlay : Form
         MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) { dragging = true; dragStart = e.Location; } };
         MouseMove += (_, e) => { if (dragging) { manualPosition = true; Location = new Point(Left + e.X - dragStart.X, Top + e.Y - dragStart.Y); } };
         MouseUp += (_, e) => { if (e.Button == MouseButtons.Left) dragging = false; };
-        MouseEnter += (_, _) => usageTip.Show(usageText, this, Width / 2, -56, 4500);
-        MouseLeave += (_, _) => usageTip.Hide(this);
+        MouseEnter += (_, _) => ShowUsagePopup();
+        MouseLeave += (_, _) => usagePopup.Hide();
     }
 
     protected override CreateParams CreateParams
@@ -59,7 +58,7 @@ public sealed class TaskbarSpeedOverlay : Form
 
     public void UpdateUsage(long receivedBytes, long sentBytes)
     {
-        usageText = "Today’s Usage\n↓ " + FormatBytes(receivedBytes) + "   ↑ " + FormatBytes(sentBytes) + "\nTotal " + FormatBytes(receivedBytes + sentBytes);
+        usagePopup.SetUsage(receivedBytes, sentBytes);
     }
 
     private static string FormatBytes(long bytes)
@@ -131,10 +130,23 @@ public sealed class TaskbarSpeedOverlay : Form
         catch { return false; }
     }
 
+    private void ShowUsagePopup()
+    {
+        var p=PointToScreen(new Point(Width/2,0));usagePopup.Location=new Point(p.X-usagePopup.Width/2,p.Y-usagePopup.Height-8);usagePopup.Show();
+    }
+
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { positionTimer.Dispose(); speedFont.Dispose(); usageTip.Dispose(); }
+        if (disposing) { positionTimer.Dispose(); speedFont.Dispose(); usagePopup.Dispose(); }
         base.Dispose(disposing);
+    }
+
+    private sealed class UsagePopup:Form
+    {
+        readonly Label title=new(), body=new();
+        public UsagePopup(){FormBorderStyle=FormBorderStyle.None;ShowInTaskbar=false;TopMost=true;Width=220;Height=92;BackColor=Color.FromArgb(20,29,41);Padding=new Padding(14,10,14,10);title.Text="Today’s Usage";title.Dock=DockStyle.Top;title.Height=25;title.ForeColor=Color.White;title.Font=new Font("Segoe UI Variable Text",10,FontStyle.Bold);body.Dock=DockStyle.Fill;body.ForeColor=Color.FromArgb(188,201,218);body.Font=new Font("Segoe UI Variable Text",9);Controls.Add(body);Controls.Add(title);SetUsage(0,0);}
+        protected override bool ShowWithoutActivation=>true;
+        public void SetUsage(long rx,long tx){body.Text="↓  "+FormatBytes(rx)+"     ↑  "+FormatBytes(tx)+"\nTotal  "+FormatBytes(rx+tx);}
     }
 
     [StructLayout(LayoutKind.Sequential)]
