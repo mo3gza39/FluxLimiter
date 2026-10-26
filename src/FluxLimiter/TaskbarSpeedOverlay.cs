@@ -36,8 +36,8 @@ public sealed class TaskbarSpeedOverlay : Form
         DoubleBuffered = true;
         Width = 104;
         Height = 34;
-        BackColor = Color.Fuchsia;
-        TransparencyKey = Color.Fuchsia;
+        BackColor = Color.FromArgb(1, 2, 3);
+        TransparencyKey = Color.FromArgb(1, 2, 3);
         ForeColor = SystemColors.ControlText;
         ContextMenuStrip = sharedMenu;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer, true);
@@ -117,12 +117,18 @@ public sealed class TaskbarSpeedOverlay : Form
         base.OnPaint(e);
         var g = e.Graphics;
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-        bool lightTaskbar = SystemColors.Control.R + SystemColors.Control.G + SystemColors.Control.B > 420;
+        bool lightTaskbar = IsLightWindowsTheme();
         Color textColor = lightTaskbar ? Color.Black : Color.White;
         var topRect = new Rectangle(0, 1, Width, (Height / 2) - 1);
         var bottomRect = new Rectangle(0, (Height / 2), Width, (Height / 2) - 1);
         TextRenderer.DrawText(g, downloadText, speedFont, topRect, textColor, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
         TextRenderer.DrawText(g, uploadText, speedFont, bottomRect, textColor, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+    }
+
+    private static bool IsLightWindowsTheme()
+    {
+        try { using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"); return Convert.ToInt32(key?.GetValue("SystemUsesLightTheme", 0), CultureInfo.InvariantCulture) != 0; }
+        catch { return false; }
     }
 
     protected override void Dispose(bool disposing)
