@@ -986,20 +986,23 @@ public sealed class MainForm : Form
 
     private void SetupContextMenu()
     {
-        var menu = new ContextMenuStrip { BackColor = cardBg, ForeColor = ink, ShowImageMargin = false };
-        menu.Items.Add("Set speed limit / rule...", null, (_, _) => { if (grid.CurrentRow is not null) EditRule(grid.CurrentRow.Index); });
-        menu.Items.Add("Toggle Windows Firewall block", null, (_, _) => ToggleBlockSelected());
+        var menu = new ContextMenuStrip { BackColor = Color.FromArgb(20,29,41), ForeColor = ink, ShowImageMargin = false, Padding = new Padding(8), Font = new Font("Segoe UI Variable Text", 9.5f), Renderer = new FluxMenuRenderer() };
+        menu.Items.Add("Open file location", null, (_, _) => WithSelectedPath(path => StartExplorer("/select,\"" + path + "\"")));
+        menu.Items.Add("Open process folder", null, (_, _) => WithSelectedPath(path => StartExplorer("\"" + (Path.GetDirectoryName(path) ?? path) + "\"")));
+        menu.Items.Add("Copy process path", null, (_, _) => WithSelectedPath(Clipboard.SetText));
+        menu.Items.Add("Open in Task Manager", null, (_, _) => { try { Process.Start(new ProcessStartInfo("taskmgr.exe") { UseShellExecute = true }); } catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { MessageBox.Show(ex.Message); } });
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Open file location", null, (_, _) => WithSelectedPath(path =>
-        {
-            try { var psi = new ProcessStartInfo("explorer.exe") { UseShellExecute = true }; psi.ArgumentList.Add("/select," + path); Process.Start(psi); }
-            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { MessageBox.Show(ex.Message); }
-        }));
-        menu.Items.Add("Copy executable path", null, (_, _) => WithSelectedPath(Clipboard.SetText));
-        menu.Items.Add("Export visible table to CSV...", null, (_, _) => ExportCsv());
+        menu.Items.Add("Set speed limit / rule…", null, (_, _) => { if (grid.CurrentRow is not null) EditRule(grid.CurrentRow.Index); });
+        menu.Items.Add("Exclude from list", null, (_, _) => MessageBox.Show("Exclude persistence is not implemented yet; no setting was changed.", "FluxLimiter"));
         grid.ContextMenuStrip = menu;
         menu.Closed += (_, _) => { if (refreshDeferredByContextMenu && !IsDisposed) { refreshDeferredByContextMenu = false; QueueReload(); } };
         grid.CellMouseDown += (_, e) => { if (e.Button == MouseButtons.Right && e.RowIndex >= 0) { grid.ClearSelection(); grid.Rows[e.RowIndex].Selected = true; grid.CurrentCell = grid.Rows[e.RowIndex].Cells["app"]; } };
+    }
+
+    private static void StartExplorer(string arguments)
+    {
+        try { Process.Start(new ProcessStartInfo("explorer.exe", arguments) { UseShellExecute = true }); }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { MessageBox.Show(ex.Message); }
     }
 
     private void ToggleBlockSelected()
