@@ -16,14 +16,14 @@ internal sealed class DashboardView:Panel
  {
   Dock=DockStyle.Fill; BackColor=Palette.Bg; Padding=new Padding(26,20,26,16);
   var root=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=5,BackColor=Palette.Bg};
-  root.RowStyles.Add(new RowStyle(SizeType.Absolute,72));root.RowStyles.Add(new RowStyle(SizeType.Absolute,112));root.RowStyles.Add(new RowStyle(SizeType.Absolute,218));root.RowStyles.Add(new RowStyle(SizeType.Percent,100));root.RowStyles.Add(new RowStyle(SizeType.Absolute,22));Controls.Add(root);
+  root.RowStyles.Add(new RowStyle(SizeType.Absolute,82));root.RowStyles.Add(new RowStyle(SizeType.Absolute,128));root.RowStyles.Add(new RowStyle(SizeType.Absolute,230));root.RowStyles.Add(new RowStyle(SizeType.Percent,100));root.RowStyles.Add(new RowStyle(SizeType.Absolute,22));Controls.Add(root);
 
   var head=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=2,Margin=Padding.Empty};head.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));head.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,240));
-  head.Controls.Add(new Label{Text="Dashboard\nOverview of your network usage and active applications",Dock=DockStyle.Fill,ForeColor=Color.White,Font=new Font("Segoe UI Variable Display",19,FontStyle.Bold)});
+  head.Controls.Add(new Label{Text="Dashboard\nLive network usage and application activity",Dock=DockStyle.Fill,ForeColor=Color.White,Font=new Font("Segoe UI Variable Display",19,FontStyle.Bold)});
   net.TextAlign=ContentAlignment.MiddleCenter;net.ForeColor=Color.White;net.BackColor=Palette.Card;net.Font=new Font("Segoe UI Variable Text",9);head.Controls.Add(net);root.Controls.Add(head);
 
   var cards=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=4,Margin=Padding.Empty};for(int i=0;i<4;i++)cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,25));
-  AddCard(cards,"DOWNLOAD",down,0);AddCard(cards,"UPLOAD",up,1);AddCard(cards,"DAILY USAGE",daily,2);AddCard(cards,"MONTHLY USAGE",monthly,3);root.Controls.Add(cards);
+  AddCard(cards,"↓  DOWNLOAD",down,0);AddCard(cards,"↑  UPLOAD",up,1);AddCard(cards,"TODAY’S USAGE",daily,2);AddCard(cards,"MONTHLY USAGE",monthly,3);root.Controls.Add(cards);
 
   var mid=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=2,Margin=Padding.Empty};mid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,42));mid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,58));
   var topCard=Card("Top Applications (Today)");tops.Dock=DockStyle.Fill;tops.FlowDirection=FlowDirection.TopDown;tops.WrapContents=false;tops.AutoScroll=true;tops.Padding=new Padding(16,2,16,12);tops.BackColor=Palette.Card;topCard.Controls.Add(tops);
@@ -46,12 +46,12 @@ internal sealed class DashboardView:Panel
  void ConfigureGrid()
  {
   Grid.BackgroundColor=Palette.Card;Grid.BorderStyle=BorderStyle.None;Grid.CellBorderStyle=DataGridViewCellBorderStyle.None;Grid.RowHeadersVisible=false;Grid.AllowUserToAddRows=false;Grid.AllowUserToDeleteRows=false;Grid.AllowUserToResizeRows=false;Grid.SelectionMode=DataGridViewSelectionMode.FullRowSelect;Grid.MultiSelect=false;Grid.AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.None;Grid.ColumnHeadersHeight=38;Grid.ColumnHeadersHeightSizeMode=DataGridViewColumnHeadersHeightSizeMode.DisableResizing;Grid.RowTemplate.Height=48;Grid.EnableHeadersVisualStyles=false;Grid.GridColor=Palette.Card;Grid.Font=new Font("Segoe UI Variable Text",9.25f);
-  Grid.ColumnHeadersDefaultCellStyle=new DataGridViewCellStyle{BackColor=Palette.Card,ForeColor=Palette.Muted,SelectionBackColor=Palette.Card,SelectionForeColor=Palette.Muted,Font=new Font("Segoe UI Variable Text",8.5f,FontStyle.Bold),Padding=new Padding(4,0,4,0),Alignment=DataGridViewContentAlignment.MiddleLeft};
+  Grid.ColumnHeadersBorderStyle=DataGridViewHeaderBorderStyle.None;Grid.ColumnHeadersDefaultCellStyle=new DataGridViewCellStyle{BackColor=Palette.Card,ForeColor=Palette.Muted,SelectionBackColor=Palette.Card,SelectionForeColor=Palette.Muted,Font=new Font("Segoe UI Variable Text",8.5f,FontStyle.Bold),Padding=new Padding(4,0,4,0),Alignment=DataGridViewContentAlignment.MiddleLeft};
   Grid.DefaultCellStyle=new DataGridViewCellStyle{BackColor=Palette.Card,ForeColor=Color.FromArgb(224,231,240),SelectionBackColor=Palette.RowHover,SelectionForeColor=Color.White,Padding=new Padding(6,0,6,0),Alignment=DataGridViewContentAlignment.MiddleLeft};
-  Grid.AlternatingRowsDefaultCellStyle=new DataGridViewCellStyle{BackColor=Palette.RowAlt,ForeColor=Color.FromArgb(224,231,240),SelectionBackColor=Palette.RowHover,SelectionForeColor=Color.White,Padding=new Padding(6,0,6,0)};
+  Grid.RowTemplate.DividerHeight=1;Grid.AlternatingRowsDefaultCellStyle=new DataGridViewCellStyle{BackColor=Palette.RowAlt,ForeColor=Color.FromArgb(224,231,240),SelectionBackColor=Palette.RowHover,SelectionForeColor=Color.White,Padding=new Padding(6,0,6,0)};
   Grid.Columns.Add(new DataGridViewImageColumn{Name="icon",HeaderText="",Width=42,ImageLayout=DataGridViewImageCellLayout.Zoom});
   foreach(var x in new[]{("app","Application",190),("status","Status",82),("download","Download",98),("upload","Upload",98),("total","Total",88),("down","Limit ↓",94),("up","Limit ↑",94),("rule","Rule",72),("action","",54),("pid","PID",90),("path","Path",160)}) Grid.Columns.Add(new DataGridViewTextBoxColumn{Name=x.Item1,HeaderText=x.Item2,Width=x.Item3});
-  Grid.Columns["app"]!.AutoSizeMode=DataGridViewAutoSizeColumnMode.Fill;Grid.Columns["pid"]!.Visible=false;Grid.Columns["path"]!.Visible=false;
+  Grid.Columns["app"]!.AutoSizeMode=DataGridViewAutoSizeColumnMode.Fill; Grid.Columns["action"]!.DefaultCellStyle.Alignment=DataGridViewContentAlignment.MiddleCenter;Grid.Columns["pid"]!.Visible=false;Grid.Columns["path"]!.Visible=false;
   Grid.CellFormatting+=(_,e)=>{if(e.RowIndex<0)return;string n=Grid.Columns[e.ColumnIndex].Name;if(n is "download" or "upload"){e.CellStyle.ForeColor=Color.FromArgb(210,220,234);e.CellStyle.Font=new Font("Segoe UI Variable Text",9.25f,FontStyle.Bold);}else if(n=="status"){var s=e.Value?.ToString()??"";e.CellStyle.ForeColor=s.Contains("Active")?Palette.Green:s.Contains("Blocked")?Color.FromArgb(248,113,113):Palette.Muted;}};
   Grid.CellDoubleClick+=(_,e)=>{if(e.RowIndex>=0)RowActionClicked?.Invoke(e.RowIndex,RowAction.Edit);};
  }
@@ -60,7 +60,7 @@ internal sealed class DashboardView:Panel
  public void SetNetwork(string a,bool ok){net.Text=(ok?"● Connected":"● Disconnected")+"\n"+a;net.ForeColor=ok?Palette.Green:Color.FromArgb(248,113,113);}
  public void SetUsage(long rx,long tx,long month,double quota,IReadOnlyList<DayBars> d,IReadOnlyList<TopApp> t)
  {
-  daily.Text=Gfx.Bytes(rx+tx);monthly.Text=Gfx.Bytes(month);chart.SetData(d);
+  daily.Text=Gfx.Bytes(rx+tx)+"\n↓ "+Gfx.Bytes(rx)+"   ↑ "+Gfx.Bytes(tx);monthly.Text=Gfx.Bytes(month);chart.SetData(d);
   tops.Controls.Clear();
   if(t.Count==0)tops.Controls.Add(new Label{Text="Waiting for validated per-app traffic data",AutoSize=true,ForeColor=Palette.Muted,Font=new Font("Segoe UI Variable Text",9.25f),Margin=new Padding(0,10,0,0)});
   else foreach(var x in t)tops.Controls.Add(new Label{Text=$"{x.Name}   {Gfx.Bytes(x.Bytes)}",AutoSize=true,ForeColor=Color.White});
