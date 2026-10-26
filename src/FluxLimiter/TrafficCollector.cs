@@ -11,7 +11,7 @@ public sealed class TrafficCollector : IDisposable
     private const string Provider = "Microsoft-Windows-Kernel-Network";
     private const string SessionName = "FluxLimiter.Network.Session";
     private const ulong AllKeywords = unchecked((ulong)-1);
-    private static readonly string[] PidFields = { "PID", "Pid", "ProcessId", "ProcessID" };
+    private static readonly string[] PidFields = { "PID", "Pid", "ProcessId", "ProcessID", "ProcessId", "IssuingThreadId" };
     private static readonly string[] SizeFields = { "size", "Size", "TransferSize", "PayloadSize" };
     private readonly ConcurrentDictionary<int, Counters> totals = new();
     private readonly ConcurrentDictionary<int, Sample> samples = new();
@@ -133,7 +133,8 @@ public sealed class TrafficCollector : IDisposable
     {
         long payloadPid = ReadLong(data, PidFields);
         if (payloadPid is > 0 and <= int.MaxValue) return (int)payloadPid;
-        return 0;
+        int eventPid = data.ProcessID;
+        return eventPid > 0 ? eventPid : 0;
     }
 
     private static long ReadLong(TraceEvent data, IEnumerable<string> candidates)
