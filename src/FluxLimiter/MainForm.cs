@@ -657,6 +657,7 @@ public sealed class MainForm : Form
             downSparkHistory.Add((float)currentDownKBps); if (downSparkHistory.Count > 12) downSparkHistory.RemoveAt(0);
             upSparkHistory.Add((float)currentUpKBps); if (upSparkHistory.Count > 12) upSparkHistory.RemoveAt(0);
             taskbarOverlay.UpdateSpeeds(currentDownKBps, currentUpKBps);
+            taskbarOverlay.UpdateUsage(todayReceivedBytes, todaySentBytes);
             dashboard.SetSpeeds(currentDownKBps, currentUpKBps);
             UpdateVisibleApplicationRates();
             AccumulateDeviceUsage(network.LastReceivedDeltaBytes, network.LastSentDeltaBytes);
