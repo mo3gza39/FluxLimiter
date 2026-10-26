@@ -15,7 +15,7 @@ public sealed class TaskbarSpeedOverlay : Form
     private const uint SWP_NOACTIVATE = 0x0010;
     private const uint SWP_SHOWWINDOW = 0x0040;
 
-    private readonly Font speedFont = new("Consolas", 8.5f, FontStyle.Bold);
+    private readonly Font speedFont = new("Segoe UI Variable Text", 8.25f, FontStyle.Regular);
     private readonly System.Windows.Forms.Timer positionTimer = new() { Interval = 1500 };
     private string downloadText = "↓ 0.0 KB/s";
     private string uploadText = "↑ 0.0 KB/s";
@@ -32,10 +32,11 @@ public sealed class TaskbarSpeedOverlay : Form
         ShowInTaskbar = false;
         TopMost = true;
         DoubleBuffered = true;
-        Width = 96;
-        Height = 36;
-        BackColor = Color.FromArgb(14, 22, 36);
-        ForeColor = Color.White;
+        Width = 104;
+        Height = 34;
+        BackColor = Color.Fuchsia;
+        TransparencyKey = Color.Fuchsia;
+        ForeColor = SystemColors.ControlText;
         ContextMenuStrip = sharedMenu;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer, true);
         positionTimer.Tick += (_, _) => { if (Visible && !manualPosition) SnapNextToTrayClock(); };
@@ -98,16 +99,13 @@ public sealed class TaskbarSpeedOverlay : Form
     {
         base.OnPaint(e);
         var g = e.Graphics;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-        using var borderPen = new Pen(Color.FromArgb(35, 53, 84), 1f);
-        g.DrawRectangle(borderPen, 0, 0, Width - 1, Height - 1);
-        Color downColor = MonochromeText ? Color.White : Color.FromArgb(0, 230, 118);
-        Color upColor = MonochromeText ? Color.FromArgb(226, 232, 240) : Color.FromArgb(29, 155, 240);
-        var topRect = new Rectangle(4, 2, Width - 8, (Height / 2) - 1);
-        var bottomRect = new Rectangle(4, (Height / 2) - 1, Width - 8, (Height / 2) - 1);
-        TextRenderer.DrawText(g, downloadText, speedFont, topRect, downColor, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-        TextRenderer.DrawText(g, uploadText, speedFont, bottomRect, upColor, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        bool lightTaskbar = SystemColors.Control.R + SystemColors.Control.G + SystemColors.Control.B > 420;
+        Color textColor = lightTaskbar ? Color.Black : Color.White;
+        var topRect = new Rectangle(0, 1, Width, (Height / 2) - 1);
+        var bottomRect = new Rectangle(0, (Height / 2), Width, (Height / 2) - 1);
+        TextRenderer.DrawText(g, downloadText, speedFont, topRect, textColor, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        TextRenderer.DrawText(g, uploadText, speedFont, bottomRect, textColor, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
     }
 
     protected override void Dispose(bool disposing)
