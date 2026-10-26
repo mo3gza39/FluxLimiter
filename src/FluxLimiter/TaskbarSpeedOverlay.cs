@@ -22,6 +22,8 @@ public sealed class TaskbarSpeedOverlay : Form
     private Point dragStart;
     private bool dragging;
     private bool manualPosition;
+    private readonly ToolTip usageTip = new() { ShowAlways = true, InitialDelay = 150, ReshowDelay = 100, AutoPopDelay = 5000 };
+    private string usageText = "Today’s Usage\n↓ 0 B   ↑ 0 B\nTotal 0 B";
 
     public bool UseBitsPerSecond { get; set; } = true;
     public bool MonochromeText { get; set; }
@@ -44,6 +46,8 @@ public sealed class TaskbarSpeedOverlay : Form
         MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) { dragging = true; dragStart = e.Location; } };
         MouseMove += (_, e) => { if (dragging) { manualPosition = true; Location = new Point(Left + e.X - dragStart.X, Top + e.Y - dragStart.Y); } };
         MouseUp += (_, e) => { if (e.Button == MouseButtons.Left) dragging = false; };
+        MouseEnter += (_, _) => usageTip.Show(usageText, this, Width / 2, -56, 4500);
+        MouseLeave += (_, _) => usageTip.Hide(this);
     }
 
     protected override CreateParams CreateParams
@@ -52,6 +56,18 @@ public sealed class TaskbarSpeedOverlay : Form
     }
 
     protected override bool ShowWithoutActivation => true;
+
+    public void UpdateUsage(long receivedBytes, long sentBytes)
+    {
+        usageText = "Today’s Usage\n↓ " + FormatBytes(receivedBytes) + "   ↑ " + FormatBytes(sentBytes) + "\nTotal " + FormatBytes(receivedBytes + sentBytes);
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        double value = Math.Max(0, bytes); string[] units = { "B", "KB", "MB", "GB", "TB" }; int unit = 0;
+        while (value >= 1024 && unit < units.Length - 1) { value /= 1024; unit++; }
+        return value.ToString(unit < 2 ? "F0" : "F2", CultureInfo.InvariantCulture) + " " + units[unit];
+    }
 
     public void UpdateSpeeds(double downloadKBps, double uploadKBps)
     {
@@ -76,7 +92,8 @@ public sealed class TaskbarSpeedOverlay : Form
     {
         if (!OperatingSystem.IsWindows()) return;
         IntPtr taskbar = FindWindow("Shell_TrayWnd", null);
-        if (taskbar == IntPtr.Zero || !GetWindowRect(taskbar, out RECT tbRect)) return;
+        if (taskbar == IntPtr.Zero || !GetWindowRect(taskbar, out RECT tbRect)) { if (Visible) Hide(); return; }
+        if (!IsWindowVisible(taskbar)) { if (Visible) Hide(); return; }
         IntPtr trayNotify = FindWindowEx(taskbar, IntPtr.Zero, "TrayNotifyWnd", null);
         int targetX, targetY;
         if (trayNotify != IntPtr.Zero && GetWindowRect(trayNotify, out RECT trayRect))
@@ -110,7 +127,7 @@ public sealed class TaskbarSpeedOverlay : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { positionTimer.Dispose(); speedFont.Dispose(); }
+        if (disposing) { positionTimer.Dispose(); speedFont.Dispose(); usageTip.Dispose(); }
         base.Dispose(disposing);
     }
 
@@ -121,6 +138,8 @@ public sealed class TaskbarSpeedOverlay : Form
     private static extern IntPtr FindWindow(string lpClassName, string? lpWindowName);
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr FindWindowEx(IntPtr hwndParent, IntPtr hwndChildAfter, string lpszClass, string? lpszWindow);
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
     [DllImport("user32.dll", SetLastError = true)]
