@@ -147,8 +147,8 @@ public sealed class MainForm : Form
         _ = traffic.StartAsync();
         LoadPersistedUsage();
 
-        if (!string.IsNullOrWhiteSpace(SettingsStore.LastLoadWarning))
-            settingsSaveDisabled = SettingsStore.LastLoadWarning.Contains("Saving is disabled", StringComparison.OrdinalIgnoreCase);
+        if (!SettingsStore.LastLoadSucceeded)
+            settingsSaveDisabled = true;
 
         Shown += (_, _) =>
         {
@@ -721,8 +721,10 @@ public sealed class MainForm : Form
 
     private void FlushPendingUsage()
     {
-        if (pendingReceivedBytes != 0 || pendingSentBytes != 0) DailyUsageStore.Add(dailyUsagePath, usageDate, pendingReceivedBytes, pendingSentBytes);
-        pendingReceivedBytes = pendingSentBytes = 0; dailyUsageFlushCounter = 0;
+        if (pendingReceivedBytes == 0 && pendingSentBytes == 0) { dailyUsageFlushCounter = 0; return; }
+        if (DailyUsageStore.Add(dailyUsagePath, usageDate, pendingReceivedBytes, pendingSentBytes))
+            pendingReceivedBytes = pendingSentBytes = 0;
+        dailyUsageFlushCounter = 0;
     }
 
     private static string FormatCardSpeed(double kbpsBytes)
