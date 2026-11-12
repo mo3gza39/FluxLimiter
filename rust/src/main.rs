@@ -17,10 +17,68 @@
 use eframe::egui;
 use egui::{Color32, RichText, Stroke, Vec2};
 use fluxlimiter::format::{format_bytes, format_speed, limit_label, parse_limit_kbps, LIMIT_PRESETS_KBPS};
-use fluxlimiter::monitor::{NetworkMonitor, Snapshot};
+use fluxlimiter::monitor::{AppTraffic, NetworkMonitor, Snapshot};
 use fluxlimiter::rules::{Rule, RulesStore};
 use fluxlimiter::stats::StatsStore;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// Decode base85 text (the project's sync channel carries text
+/// only, so binary assets travel as base85).
+fn b85_decode(text: &str) -> Vec<u8> {
+    // Python base64.b85 alphabet (index = digit value).
+    const ALPHABET: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~";
+    let mut rev = [u8::MAX; 256];
+    for (i, &c) in ALPHABET.iter().enumerate() {
+        rev[c as usize] = i as u8;
+    }
+    let digits: Vec<u8> = text
+        .bytes()
+        .filter_map(|b| match rev[b as usize] {
+            u8::MAX => None,
+            v => Some(v),
+        })
+        .collect();
+    let mut out = Vec::with_capacity(digits.len() * 4 / 5 + 4);
+    for chunk in digits.chunks(5) {
+        let mut acc: u64 = 0;
+        for &d in chunk {
+            acc = acc * 85 + d as u64;
+        }
+        let nbytes = if chunk.len() == 5 {
+            4
+        } else {
+            for _ in chunk.len()..5 {
+                acc = acc * 85 + 84;
+            }
+            chunk.len() - 1
+        };
+        let be = (acc as u32).to_be_bytes();
+        out.extend_from_slice(&be[..nbytes]);
+    }
+    out
+}
+
+/// The application icon: the blue bars mark from the project's
+/// reference design, stored as 64x64 RGBA in base85.
+fn app_icon() -> egui::IconData {
+    let rgba = b85_decode(include_str!("../assets/icon_rgba.b85"));
+    if rgba.len() == 64 * 64 * 4 {
+        egui::IconData { rgba, width: 64, height: 64 }
+    } else {
+        egui::IconData::default()
+    }
+}
+
+/// Actions the taskbar strip's context menu can request; the main
+/// window drains this once per frame.
+#[derive(Clone, Copy, PartialEq)]
+enum StripAction {
+    FocusMain,
+    ToggleBits,
+    HideStrip,
+    Exit,
+}
 
 const BG: Color32 = Color32::from_rgb(10, 22, 34);
 const SIDEBAR_BG: Color32 = Color32::from_rgb(12, 26, 41);
@@ -43,6 +101,7 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1240.0, 800.0])
             .with_min_inner_size([980.0, 640.0])
+            .with_icon(app_icon())
             .with_title("FluxLimiter"),
         ..Default::default()
     };
@@ -70,6 +129,8 @@ struct FluxApp {
     search: String,
     /// Rolling per-second (down, up) samples for the card sparklines.
     history: Vec<(f32, f32)>,
+    /// Pending request from the taskbar strip's context menu.
+    strip_action: Arc<Mutex<Option<StripAction>>>,
 }
 
 impl Default for FluxApp {
@@ -86,6 +147,7 @@ impl Default for FluxApp {
             show_strip: true,
             search: String::new(),
             history: Vec::new(),
+            strip_action: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -162,6 +224,16 @@ impl FluxApp {
         }
         let down = format_speed(self.snap.down_bps, self.use_bits);
         let up = format_speed(self.snap.up_bps, self.use_bits);
+        let (t_down, t_up) = self.stats.today();
+        let (m_down, m_up) = self.stats.current_month();
+        let hover_text = format!(
+            "Today: Down {} / Up {}\nThis month: {}",
+            format_bytes(t_down),
+            format_bytes(t_up),
+            format_bytes(m_down + m_up)
+        );
+        let use_bits = self.use_bits;
+        let action_slot = self.strip_action.clone();
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("taskbar_strip"),
             egui::ViewportBuilder::default()
@@ -174,8 +246,36 @@ impl FluxApp {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::none().fill(Color32::from_rgb(11, 21, 32)))
                     .show(vctx, |ui| {
+                        let rect = ui.max_rect();
+                        let resp = ui.interact(rect, egui::Id::new("strip_area"), egui::Sense::click());
                         ui.label(RichText::new(format!("Down {down}")).color(GREEN).size(13.0));
                         ui.label(RichText::new(format!("Up {up}")).color(BLUE).size(13.0));
+                        resp.clone().on_hover_text(&hover_text);
+                        resp.context_menu(|ui| {
+                            ui.set_min_width(180.0);
+                            let set = |a: StripAction| {
+                                if let Ok(mut slot) = action_slot.lock() {
+                                    *slot = Some(a);
+                                }
+                            };
+                            if ui.button("Open FluxLimiter").clicked() {
+                                set(StripAction::FocusMain);
+                                ui.close_menu();
+                            }
+                            if ui.selectable_label(use_bits, "Show speeds in bits").clicked() {
+                                set(StripAction::ToggleBits);
+                                ui.close_menu();
+                            }
+                            if ui.button("Hide speed strip").clicked() {
+                                set(StripAction::HideStrip);
+                                ui.close_menu();
+                            }
+                            ui.separator();
+                            if ui.button("Exit FluxLimiter").clicked() {
+                                set(StripAction::Exit);
+                                ui.close_menu();
+                            }
+                        });
                     });
                 if vctx.input(|i| i.viewport().close_requested()) {
                     // strip is controlled from the main window checkbox
@@ -185,10 +285,65 @@ impl FluxApp {
     }
 }
 
+/// Right-click menu for an application row (table and Top
+/// Applications alike), NetLimiter-style: jump to the file in
+/// Explorer, open its Properties sheet, copy its path, block it.
+fn app_context_menu(resp: &egui::Response, app: &AppTraffic, rules: &mut RulesStore) {
+    let mut rule = rules.get_or_default(&app.exe_path, &app.name);
+    let blocked = rule.blocked;
+    let exe = app.exe_path.clone();
+    resp.context_menu(|ui| {
+        ui.set_min_width(190.0);
+        if ui
+            .add_enabled(
+                fluxlimiter::shell_actions::AVAILABLE,
+                egui::Button::new("Open file location"),
+            )
+            .clicked()
+        {
+            fluxlimiter::shell_actions::open_file_location(&exe);
+            ui.close_menu();
+        }
+        if ui
+            .add_enabled(
+                fluxlimiter::shell_actions::AVAILABLE,
+                egui::Button::new("Properties"),
+            )
+            .clicked()
+        {
+            fluxlimiter::shell_actions::file_properties(&exe);
+            ui.close_menu();
+        }
+        if ui.button("Copy path").clicked() {
+            ui.ctx().copy_text(exe.clone());
+            ui.close_menu();
+        }
+        ui.separator();
+        if ui.button(if blocked { "Unblock" } else { "Block" }).clicked() {
+            rule.blocked = !blocked;
+            rules.set(rule.clone());
+            ui.close_menu();
+        }
+    });
+}
+
 impl eframe::App for FluxApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_if_due();
         ctx.request_repaint_after(Duration::from_millis(250));
+        // Drain any request from the strip's right-click menu.
+        if let Some(action) = self.strip_action.lock().ok().and_then(|mut s| s.take()) {
+            match action {
+                StripAction::FocusMain => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                StripAction::ToggleBits => self.use_bits = !self.use_bits,
+                StripAction::HideStrip => self.show_strip = false,
+                StripAction::Exit => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
         self.taskbar_strip(ctx);
 
         // ---------- sidebar ----------
@@ -202,16 +357,23 @@ impl eframe::App for FluxApp {
             .show(ctx, |ui| {
                 ui.add_space(16.0);
                 ui.horizontal(|ui| {
-                    // Logo mark: a rounded accent tile with the letter F.
+                    // Logo mark: the project's own icon - a blue tile
+                    // with three ascending white bars (from the
+                    // reference design in the repo).
                     let (rect, _) = ui.allocate_exact_size(Vec2::new(34.0, 34.0), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, 9.0, GREEN);
-                    ui.painter().text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        "F",
-                        egui::FontId::proportional(19.0),
-                        Color32::from_rgb(6, 26, 16),
-                    );
+                    ui.painter().rect_filled(rect, 8.0, Color32::from_rgb(2, 124, 240));
+                    let base = rect.max.y - 7.0;
+                    for (i, h) in [8.0_f32, 13.0, 18.0].iter().enumerate() {
+                        let bx = rect.min.x + 7.0 + i as f32 * 8.0;
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_max(
+                                egui::pos2(bx, base - h),
+                                egui::pos2(bx + 5.0, base),
+                            ),
+                            1.5,
+                            Color32::WHITE,
+                        );
+                    }
                     ui.vertical(|ui| {
                         ui.label(RichText::new("FluxLimiter").size(16.0).strong().color(TEXT));
                         ui.label(RichText::new("Network control").color(MUTED).size(11.0));
@@ -365,14 +527,18 @@ impl eframe::App for FluxApp {
                     ui.label(RichText::new("Top Applications").size(14.0).strong().color(TEXT));
                     ui.label(RichText::new("Ranked by active connections").color(MUTED).size(11.0));
                     ui.add_space(8.0);
-                    let top: Vec<_> = self.snap.apps.iter().take(5).collect();
+                    let top: Vec<AppTraffic> = self.snap.apps.iter().take(5).cloned().collect();
                     if top.is_empty() {
                         ui.label(RichText::new("No active connections right now.").color(MUTED));
                     }
                     let peak = top.iter().map(|a| a.connections).max().unwrap_or(1).max(1);
                     for app in top {
+                        let mut name_resp: Option<egui::Response> = None;
                         ui.horizontal(|ui| {
-                            ui.add_sized([150.0, 18.0], egui::Label::new(&app.name));
+                            name_resp = Some(ui.add_sized(
+                                [150.0, 18.0],
+                                egui::Label::new(&app.name).sense(egui::Sense::click()),
+                            ));
                             let w = 150.0 * app.connections as f32 / peak as f32;
                             let (rect, _) = ui.allocate_exact_size(Vec2::new(160.0, 9.0), egui::Sense::hover());
                             ui.painter().rect_filled(rect, 4.0, CARD_INNER);
@@ -381,6 +547,9 @@ impl eframe::App for FluxApp {
                             ui.painter().rect_filled(fill, 4.0, GREEN);
                             ui.label(RichText::new(format!("{} conn", app.connections)).color(MUTED).size(11.0));
                         });
+                        if let Some(resp) = &name_resp {
+                            app_context_menu(resp, &app, &mut self.rules);
+                        }
                         ui.add_space(3.0);
                     }
                 });
@@ -485,8 +654,12 @@ impl eframe::App for FluxApp {
                     for (row_idx, app) in apps.into_iter().enumerate() {
                         let mut rule: Rule = self.rules.get_or_default(&app.exe_path, &app.name);
                         let mut changed = false;
+                        let mut name_resp: Option<egui::Response> = None;
                         ui.horizontal(|ui| {
-                            ui.add_sized([240.0, 20.0], egui::Label::new(&app.name));
+                            name_resp = Some(ui.add_sized(
+                                [240.0, 20.0],
+                                egui::Label::new(&app.name).sense(egui::Sense::click()),
+                            ));
                             ui.add_sized([90.0, 20.0], egui::Label::new(RichText::new("Active").color(GREEN)));
                             ui.add_sized([90.0, 20.0], egui::Label::new(format!("{} conn", app.connections)));
                             // limit dropdowns (KB/s presets)
@@ -520,6 +693,9 @@ impl eframe::App for FluxApp {
                         });
                         if changed {
                             self.rules.set(rule);
+                        }
+                        if let Some(resp) = &name_resp {
+                            app_context_menu(resp, &app, &mut self.rules);
                         }
                         if row_idx + 1 < row_count {
                             ui.add_space(3.0);
