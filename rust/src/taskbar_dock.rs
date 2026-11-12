@@ -1,20 +1,31 @@
-//! Taskbar docking, TrafficMonitor-style (Windows only).
+//! Taskbar docking, following the approach of the open-source
+//! TrafficMonitor (CTaskBarDlg and its two implementations),
+//! which was read and mirrored deliberately:
 //!
-//! Instead of a floating strip, this creates a small Win32 child
-//! window and parents it into the taskbar itself (`Shell_TrayWnd`),
-//! positioned in the gap just left of the notification area
-//! (`TrayNotifyWnd`). It paints the Down/Up lines with GDI on a
-//! timer, follows the tray when it moves, re-docks if Explorer
-//! restarts, shows the usage tooltip on hover, and offers the
-//! same right-click menu as the floating strip (via the shared
-//! StripAction slot).
+//! * Classical taskbar (Windows 10 and earlier): the parent is
+//!   `ReBarWindow32` inside `Shell_TrayWnd` — a direct child of
+//!   `Shell_TrayWnd` would be covered by the rebar. Room is made
+//!   by shrinking the task-list window (`MSTaskSwWClass`) by the
+//!   dock's width; its original size is restored when the dock
+//!   hides or the app exits.
+//! * Windows 11 taskbar (no rebar): the parent is `Shell_TrayWnd`
+//!   itself; the dock sits at `TrayNotifyWnd.left - width + 2`,
+//!   vertically centered on the Start button's height.
 //!
-//! The floating egui strip stays as the fallback: the GUI only
-//! skips it while `shared.active` reports a live docked window.
+//! In both cases the window is placed with `MoveWindow` in
+//! parent-client coordinates, repositioned when the tray layout
+//! signature changes, and only reported `active` (which makes
+//! the GUI skip the floating strip) after its on-screen rect
+//! verifiably intersects the taskbar while visible — a dock that
+//! cannot be seen never suppresses the fallback strip. Every
+//! step is appended to `dock.log` next to the rules file, so a
+//! failure on a real machine leaves evidence instead of silence.
 
 use crate::StripAction;
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use windows::Win32::Foundation::{HWND, RECT};
 
 pub struct DockShared {
     pub down: Mutex<String>,
@@ -55,17 +66,77 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// Append one line to dock.log in the app's data directory.
+fn log_line(msg: &str) {
+    let dir = fluxlimiter::rules::user_data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("dock.log"))
+    {
+        use std::io::Write;
+        let _ = writeln!(f, "[{secs}] {msg}");
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    None,
+    Classical,
+    Win11,
+}
+
+/// Runtime docking state; only ever touched on the dock thread.
+struct DockRt {
+    mode: Mode,
+    parent: HWND,
+    tasklist: HWND,
+    /// Task-list rect (parent-client coords) before we shrank it.
+    tasklist_orig: Option<RECT>,
+    tasklist_shrunk: bool,
+    docked: bool,
+    /// (notify_left, notify_width, tasklist_width) last positioned for.
+    last_sig: (i32, i32, i32),
+    verified_ticks: u32,
+    logged_waiting: bool,
+}
+
+impl DockRt {
+    fn new() -> Self {
+        Self {
+            mode: Mode::None,
+            parent: HWND::default(),
+            tasklist: HWND::default(),
+            tasklist_orig: None,
+            tasklist_shrunk: false,
+            docked: false,
+            last_sig: (0, 0, 0),
+            verified_ticks: 0,
+            logged_waiting: false,
+        }
+    }
+}
+
+thread_local! {
+    static RT: RefCell<DockRt> = RefCell::new(DockRt::new());
+}
+
 pub fn spawn(shared: Arc<DockShared>) {
     std::thread::spawn(move || unsafe { run(shared) });
 }
 
 unsafe fn run(shared: Arc<DockShared>) {
     use windows::core::{w, PCWSTR};
-    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DispatchMessageW, GetMessageW, LoadCursorW, RegisterClassExW,
-        TranslateMessage, IDC_ARROW, MSG, WINDOW_EX_STYLE, WM_DESTROY, WNDCLASSEXW,
+        SetTimer, TranslateMessage, IDC_ARROW, MSG, WINDOW_EX_STYLE, WNDCLASSEXW, WS_POPUP,
     };
 
     // Stash the shared state where the window procedure can reach
@@ -82,20 +153,27 @@ unsafe fn run(shared: Arc<DockShared>) {
         ..Default::default()
     };
     if RegisterClassExW(&wc) == 0 {
+        log_line("RegisterClassExW failed");
         return;
     }
 
-    extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    extern "system" fn wnd_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
         unsafe { dock_wnd_proc(hwnd, msg, wparam, lparam) }
     }
 
-    // Created hidden and off-screen as a popup; try_dock then
-    // re-parents it into the taskbar as a child window.
+    // Created hidden as a popup; the timer cycle parents it into
+    // the taskbar (TrafficMonitor parents in OnInitDialog; here
+    // the first timer tick, ~500 ms in, does the same job).
     let hwnd = CreateWindowExW(
         WINDOW_EX_STYLE::default(),
         class_name,
         PCWSTR::null(),
-        windows::Win32::UI::WindowsAndMessaging::WS_POPUP,
+        WS_POPUP,
         -100,
         -100,
         10,
@@ -105,11 +183,12 @@ unsafe fn run(shared: Arc<DockShared>) {
         hinstance,
         Some(state as *const DockShared as *const std::ffi::c_void),
     );
-    let Ok(hwnd) = hwnd else { return };
-    if try_dock(hwnd) {
-        state.active.store(true, Ordering::Relaxed);
-    }
-    dock_set_timer(hwnd);
+    let Ok(hwnd) = hwnd else {
+        log_line("CreateWindowExW failed");
+        return;
+    };
+    SetTimer(hwnd, 1, 500, None);
+    log_line("dock thread started");
 
     let mut msg = MSG::default();
     loop {
@@ -119,21 +198,12 @@ unsafe fn run(shared: Arc<DockShared>) {
         }
         let _ = TranslateMessage(&msg);
         DispatchMessageW(&msg);
-        if msg.message == WM_DESTROY {
-            break;
-        }
     }
     state.active.store(false, Ordering::Relaxed);
+    log_line("dock thread exiting");
 }
 
-unsafe fn dock_set_timer(hwnd: windows::Win32::Foundation::HWND) {
-    use windows::Win32::UI::WindowsAndMessaging::SetTimer;
-    SetTimer(hwnd, 1, 500, None);
-}
-
-unsafe fn shared_of(
-    hwnd: windows::Win32::Foundation::HWND,
-) -> Option<&'static DockShared> {
+unsafe fn shared_of(hwnd: HWND) -> Option<&'static DockShared> {
     use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, GWLP_USERDATA};
     let p = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
     if p == 0 {
@@ -143,44 +213,63 @@ unsafe fn shared_of(
     }
 }
 
-/// Find the taskbar and its notification area.
-unsafe fn tray_windows() -> Option<(
-    windows::Win32::Foundation::HWND,
-    windows::Win32::Foundation::HWND,
-)> {
-    use windows::core::w;
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, FindWindowW};
-    let tray = FindWindowW(w!("Shell_TrayWnd"), None).ok()?;
-    let notify = FindWindowExW(tray, HWND::default(), w!("TrayNotifyWnd"), None).ok()?;
-    Some((tray, notify))
+unsafe fn win_rect(hwnd: HWND) -> Option<RECT> {
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    let mut r = RECT::default();
+    GetWindowRect(hwnd, &mut r).ok().map(|_| r)
 }
 
-/// Parent the dock window into the taskbar and place it in the
-/// gap left of the notification area. False when the taskbar is
-/// vertical or missing (the caller keeps the floating strip).
-unsafe fn try_dock(hwnd: windows::Win32::Foundation::HWND) -> bool {
-    use windows::Win32::Foundation::{HWND, RECT};
-    use windows::Win32::Graphics::Gdi::ScreenToClient;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, SetParent, SetWindowPos, SWP_NOACTIVATE,
+unsafe fn find_child(parent: HWND, class: &str) -> Option<HWND> {
+    use windows::Win32::UI::WindowsAndMessaging::FindWindowExW;
+    let cls = wide(class);
+    FindWindowExW(
+        parent,
+        HWND::default(),
+        windows::core::PCWSTR(cls.as_ptr()),
+        None,
+    )
+    .ok()
+    .filter(|h| !h.0.is_null())
+}
+
+/// Attempt the full docking once. Logs every step; false keeps
+/// the caller retrying on later ticks (Explorer may still be
+/// starting) without ever marking the dock active.
+unsafe fn try_dock(hwnd: HWND) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, SetParent};
+    let tray = {
+        let cls = wide("Shell_TrayWnd");
+        FindWindowW(windows::core::PCWSTR(cls.as_ptr()), None).ok()
     };
-    let Some((tray, notify)) = tray_windows() else {
+    let Some(tray) = tray.filter(|h| !h.0.is_null()) else {
+        log_line("Shell_TrayWnd not found");
         return false;
     };
-    let mut tray_rect = RECT::default();
-    let mut notify_rect = RECT::default();
-    if GetWindowRect(tray, &mut tray_rect).is_err()
-        || GetWindowRect(notify, &mut notify_rect).is_err()
-    {
+    let Some(tray_rect) = win_rect(tray) else {
+        log_line("tray rect failed");
         return false;
-    }
+    };
     let bar_w = tray_rect.right - tray_rect.left;
     let bar_h = tray_rect.bottom - tray_rect.top;
     if bar_w <= bar_h {
-        return false; // vertical taskbar: not supported, use the strip
+        log_line(&format!("vertical taskbar ({bar_w}x{bar_h}); not docking"));
+        return false;
     }
-    if SetParent(hwnd, tray).is_err() {
+    let Some(notify) = find_child(tray, "TrayNotifyWnd") else {
+        log_line("TrayNotifyWnd not found");
+        return false;
+    };
+
+    // Parent choice, TrafficMonitor-style: the rebar when it
+    // exists (classical), the tray itself on Windows 11.
+    let rebar = find_child(tray, "ReBarWindow32")
+        .or_else(|| find_child(tray, "WorkerW"));
+    let (mode, parent) = match rebar {
+        Some(bar) => (Mode::Classical, bar),
+        None => (Mode::Win11, tray),
+    };
+    if SetParent(hwnd, parent).is_err() {
+        log_line("SetParent failed");
         return false;
     }
     // Popup -> child, now that it has a parent.
@@ -190,68 +279,271 @@ unsafe fn try_dock(hwnd: windows::Win32::Foundation::HWND) -> bool {
     let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
     let child_style = (style & !(WS_POPUP.0 as isize)) | WS_CHILD.0 as isize;
     SetWindowLongPtrW(hwnd, GWL_STYLE, child_style);
-    // Width scales with the bar height (about 3x), roughly 120 px
-    // on a standard 40 px taskbar.
-    let width = (bar_h * 3).max(96);
-    let mut pt = windows::Win32::Foundation::POINT {
-        x: notify_rect.left - width - 2,
-        y: tray_rect.top,
-    };
-    let _ = ScreenToClient(tray, &mut pt);
-    let _ = SetWindowPos(
-        hwnd,
-        HWND::default(),
-        pt.x,
-        pt.y,
-        width,
-        bar_h,
-        SWP_NOACTIVATE,
-    );
+
+    let mut tasklist = HWND::default();
+    if mode == Mode::Classical {
+        tasklist = find_child(parent, "MSTaskSwWClass")
+            .or_else(|| find_child(parent, "MSTaskListWClass"))
+            .unwrap_or_default();
+        if tasklist.0.is_null() {
+            log_line("classical taskbar but no task-list window found");
+            return false;
+        }
+    }
+    RT.with(|rt| {
+        let mut rt = rt.borrow_mut();
+        rt.mode = mode;
+        rt.parent = parent;
+        rt.tasklist = tasklist;
+        rt.docked = true;
+        rt.last_sig = (0, 0, 0);
+        rt.verified_ticks = 0;
+    });
+    log_line(&format!(
+        "docked: mode={} bar={bar_w}x{bar_h}",
+        if mode == Mode::Classical { "classical" } else { "win11" }
+    ));
+    position(hwnd, true);
     true
 }
 
-/// Reposition if the tray moved (resolution change, taskbar
-/// re-layout, Explorer restart).
-unsafe fn follow_tray(hwnd: windows::Win32::Foundation::HWND) {
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::GetParent;
-    let parent_ok = match tray_windows() {
-        Some((tray, _)) => GetParent(hwnd).map(|p| p == tray).unwrap_or(false),
-        None => false,
+/// (Re)position the dock inside its parent, TrafficMonitor
+/// geometry. `force` repositions even when the tray signature
+/// looks unchanged.
+unsafe fn position(hwnd: HWND, force: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{GetParent, MoveWindow, ShowWindow, SW_SHOW};
+    let Some(tray) = ({
+        let cls = wide("Shell_TrayWnd");
+        use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
+        FindWindowW(windows::core::PCWSTR(cls.as_ptr()), None)
+            .ok()
+            .filter(|h| !h.0.is_null())
+    }) else {
+        return;
     };
-    if !parent_ok {
-        if let Some(shared) = shared_of(hwnd) {
-            let docked = try_dock(hwnd);
-            shared.active.store(docked, std::sync::atomic::Ordering::Relaxed);
+    let Some(tray_rect) = win_rect(tray) else { return };
+    let Some(notify) = find_child(tray, "TrayNotifyWnd") else {
+        return;
+    };
+    let Some(notify_rect) = win_rect(notify) else {
+        return;
+    };
+    let bar_h = tray_rect.bottom - tray_rect.top;
+    let width = (bar_h * 3).clamp(110, 170);
+
+    // Layout signature: notification area geometry plus (in
+    // classical mode) the task-list width, whose changes mean
+    // Explorer re-laid out the bar and our space may be gone.
+    let tasklist_w = RT.with(|rt| {
+        let rt = rt.borrow();
+        if rt.mode == Mode::Classical {
+            win_rect(rt.tasklist).map(|r| r.right - r.left).unwrap_or(0)
+        } else {
+            0
         }
+    });
+    let sig = (
+        notify_rect.left,
+        notify_rect.right - notify_rect.left,
+        tasklist_w,
+    );
+    let need = RT.with(|rt| {
+        let rt = rt.borrow();
+        force || rt.last_sig != sig || !rt.docked
+    });
+    if !need {
         return;
     }
-    // Already docked: only move when the tray layout changed.
-    use windows::Win32::Foundation::RECT;
-    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
-    if let Some((_, notify)) = tray_windows() {
-        let mut mine = RECT::default();
-        let mut nrect = RECT::default();
-        if GetWindowRect(hwnd, &mut mine).is_ok() && GetWindowRect(notify, &mut nrect).is_ok() {
-            let width = mine.right - mine.left;
-            if mine.left != nrect.left - width - 2 {
-                let _ = try_dock(hwnd);
+
+    let parent = GetParent(hwnd).unwrap_or_default();
+    let Some(parent_rect) = win_rect(parent) else {
+        return;
+    };
+    let (x, y, height) = RT.with(|rt| {
+        let mut rt = rt.borrow_mut();
+        match rt.mode {
+            Mode::Classical => {
+                let Some(min_rect) = win_rect(rt.tasklist) else {
+                    return (0, 0, 0);
+                };
+                let left_space = min_rect.left - parent_rect.left;
+                let top_space = min_rect.top - parent_rect.top;
+                // Once shrunk, the live rect is narrower than the
+                // original; all math uses the ORIGINAL width.
+                let (min_w, min_h) = if rt.tasklist_shrunk {
+                    rt.tasklist_orig
+                        .map(|o| (o.right - o.left, o.bottom - o.top))
+                        .unwrap_or((min_rect.right - min_rect.left, min_rect.bottom - min_rect.top))
+                } else {
+                    (min_rect.right - min_rect.left, min_rect.bottom - min_rect.top)
+                };
+                if rt.tasklist_orig.is_none() {
+                    rt.tasklist_orig = Some(RECT {
+                        left: left_space,
+                        top: top_space,
+                        right: left_space + min_w,
+                        bottom: top_space + min_h,
+                    });
+                }
+                if rt.tasklist_shrunk && min_rect.right - min_rect.left >= min_w {
+                    // Explorer re-laid out the bar and gave the
+                    // task list its full width back: our reserved
+                    // space is gone, reserve it again below.
+                    rt.tasklist_shrunk = false;
+                }
+                if !rt.tasklist_shrunk {
+                    // Make room: shrink the task list by our width
+                    // (TrafficMonitor's classical AdjustTaskbarWndPos).
+                    let _ = MoveWindow(
+                        rt.tasklist,
+                        left_space,
+                        top_space,
+                        (min_w - width).max(0),
+                        min_h,
+                        true,
+                    );
+                    rt.tasklist_shrunk = true;
+                }
+                // Right after the (shrunk) task list, i.e. just
+                // left of the notification area.
+                (left_space + min_w - width + 2, 0, parent_rect.bottom - parent_rect.top)
+            }
+            _ => {
+                // Windows 11: next to the notification area,
+                // vertically centered on the Start button height.
+                let start_h = find_child(tray, "Start")
+                    .and_then(|h| win_rect(h))
+                    .map(|r| r.bottom - r.top)
+                    .unwrap_or(bar_h);
+                let h = start_h;
+                let x = (notify_rect.left - parent_rect.left) - width + 2;
+                let y = (start_h - h) / 2 + (bar_h - start_h);
+                (x, y, h)
             }
         }
+    });
+    if height == 0 {
+        return;
     }
+    let _ = MoveWindow(hwnd, x, y, width, height, true);
+    let _ = ShowWindow(hwnd, SW_SHOW);
+    RT.with(|rt| {
+        rt.borrow_mut().last_sig = sig;
+    });
 }
 
-unsafe fn make_tooltip(
-    hwnd: windows::Win32::Foundation::HWND,
-    shared: &DockShared,
-) -> windows::Win32::Foundation::HWND {
+/// Restore the task list's original size (classical mode) —
+/// called when the dock hides or is destroyed.
+unsafe fn restore_tasklist() {
+    use windows::Win32::UI::WindowsAndMessaging::MoveWindow;
+    RT.with(|rt| {
+        let mut rt = rt.borrow_mut();
+        if rt.mode == Mode::Classical && rt.tasklist_shrunk {
+            if let Some(o) = rt.tasklist_orig {
+                let _ = MoveWindow(
+                    rt.tasklist,
+                    o.left,
+                    o.top,
+                    o.right - o.left,
+                    o.bottom - o.top,
+                    true,
+                );
+            }
+            rt.tasklist_shrunk = false;
+        }
+    });
+}
+
+/// Per-tick maintenance: dock if needed, follow tray changes,
+/// and only mark `active` once the window is verifiably on the
+/// taskbar (visible + intersecting it).
+unsafe fn adjust(hwnd: HWND, shared: &DockShared) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        BringWindowToTop, IsWindowVisible, ShowWindow, SW_HIDE,
+    };
+    if !shared.visible.load(Ordering::Relaxed) {
+        if shared.active.swap(false, Ordering::Relaxed) {
+            restore_tasklist();
+            RT.with(|rt| rt.borrow_mut().docked = false);
+        }
+        let _ = ShowWindow(hwnd, SW_HIDE);
+        return;
+    }
+    let docked = RT.with(|rt| rt.borrow().docked);
+    if !docked {
+        try_dock(hwnd);
+        return;
+    }
+    // Explorer may have restarted: parent gone means re-dock.
+    use windows::Win32::UI::WindowsAndMessaging::GetParent;
+    let parent_ok = RT.with(|rt| {
+        let rt = rt.borrow();
+        GetParent(hwnd).map(|p| p == rt.parent).unwrap_or(false)
+    });
+    if !parent_ok {
+        restore_tasklist();
+        RT.with(|rt| {
+            let mut rt = rt.borrow_mut();
+            rt.docked = false;
+            rt.mode = Mode::None;
+        });
+        shared.active.store(false, Ordering::Relaxed);
+        log_line("parent lost (Explorer restart?); will re-dock");
+        return;
+    }
+    position(hwnd, false);
+    let _ = BringWindowToTop(hwnd);
+
+    // Verification gate: believe "active" only when the window
+    // really is on the bar.
+    let on_bar = (|| {
+        let mine = win_rect(hwnd)?;
+        let cls = wide("Shell_TrayWnd");
+        let tray = windows::Win32::UI::WindowsAndMessaging::FindWindowW(
+            windows::core::PCWSTR(cls.as_ptr()),
+            None,
+        )
+        .ok()?;
+        let t = win_rect(tray)?;
+        let intersects = mine.left < t.right
+            && mine.right > t.left
+            && mine.top < t.bottom
+            && mine.bottom > t.top
+            && mine.right - mine.left >= 50;
+        Some(intersects && IsWindowVisible(hwnd).as_bool())
+    })()
+    .unwrap_or(false);
+    RT.with(|rt| {
+        let mut rt = rt.borrow_mut();
+        if on_bar {
+            rt.verified_ticks = rt.verified_ticks.saturating_add(1);
+            if rt.verified_ticks >= 2 && !shared.active.load(Ordering::Relaxed) {
+                shared.active.store(true, Ordering::Relaxed);
+                log_line("dock verified visible on the taskbar");
+            }
+        } else {
+            rt.verified_ticks = 0;
+            if !rt.logged_waiting {
+                rt.logged_waiting = true;
+                log_line("docked but not yet visible on the taskbar");
+            }
+            if shared.active.load(Ordering::Relaxed) {
+                shared.active.store(false, Ordering::Relaxed);
+            }
+        }
+    });
+}
+
+unsafe fn make_tooltip(hwnd: HWND, shared: &DockShared) -> HWND {
     use windows::core::w;
-    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::UI::Controls::{
         InitCommonControlsEx, ICC_WIN95_CLASSES, INITCOMMONCONTROLSEX, TTTOOLINFOW, TTF_IDISHWND,
         TTF_SUBCLASS, TTM_ADDTOOLW,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, SendMessageW, WINDOW_EX_STYLE, WINDOW_STYLE};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, SendMessageW, WINDOW_EX_STYLE, WINDOW_STYLE,
+    };
     let _ = InitCommonControlsEx(&INITCOMMONCONTROLSEX {
         dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
         dwICC: ICC_WIN95_CLASSES,
@@ -281,15 +573,16 @@ unsafe fn make_tooltip(
         lpszText: windows::core::PWSTR(wide_text.as_mut_ptr()),
         ..Default::default()
     };
-    SendMessageW(tip, TTM_ADDTOOLW, WPARAM(0), LPARAM(&info as *const TTTOOLINFOW as isize));
+    SendMessageW(
+        tip,
+        TTM_ADDTOOLW,
+        WPARAM(0),
+        LPARAM(&info as *const TTTOOLINFOW as isize),
+    );
     tip
 }
 
-unsafe fn update_tooltip(
-    hwnd: windows::Win32::Foundation::HWND,
-    tip: windows::Win32::Foundation::HWND,
-    shared: &DockShared,
-) {
+unsafe fn update_tooltip(hwnd: HWND, tip: HWND, shared: &DockShared) {
     use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::UI::Controls::{TTTOOLINFOW, TTM_UPDATETIPTEXTW};
     use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
@@ -305,27 +598,31 @@ unsafe fn update_tooltip(
         lpszText: windows::core::PWSTR(wide_text.as_mut_ptr()),
         ..Default::default()
     };
-    SendMessageW(tip, TTM_UPDATETIPTEXTW, WPARAM(0), LPARAM(&info as *const TTTOOLINFOW as isize));
+    SendMessageW(
+        tip,
+        TTM_UPDATETIPTEXTW,
+        WPARAM(0),
+        LPARAM(&info as *const TTTOOLINFOW as isize),
+    );
 }
 
 static TOOLTIP: std::sync::Mutex<isize> = std::sync::Mutex::new(0);
 
 unsafe fn dock_wnd_proc(
-    hwnd: windows::Win32::Foundation::HWND,
+    hwnd: HWND,
     msg: u32,
     wparam: windows::Win32::Foundation::WPARAM,
     lparam: windows::Win32::Foundation::LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
-    use windows::Win32::Foundation::{HWND, LRESULT};
+    use windows::Win32::Foundation::LRESULT;
     use windows::Win32::UI::WindowsAndMessaging::{
-        DefWindowProcW, PostQuitMessage, WM_CREATE, WM_DESTROY, WM_PAINT, WM_RBUTTONUP,
-        WM_TIMER,
+        DefWindowProcW, PostQuitMessage, WM_CREATE, WM_DESTROY, WM_PAINT, WM_RBUTTONUP, WM_TIMER,
     };
-    const CREATE_STRUCT_OFF: usize = 0;
-    let _ = CREATE_STRUCT_OFF;
     match msg {
         x if x == WM_CREATE => {
-            use windows::Win32::UI::WindowsAndMessaging::{SetWindowLongPtrW, CREATESTRUCTW, GWLP_USERDATA};
+            use windows::Win32::UI::WindowsAndMessaging::{
+                SetWindowLongPtrW, CREATESTRUCTW, GWLP_USERDATA,
+            };
             let cs = &*(lparam.0 as *const CREATESTRUCTW);
             let shared = &*(cs.lpCreateParams as *const DockShared);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, shared as *const DockShared as isize);
@@ -337,21 +634,12 @@ unsafe fn dock_wnd_proc(
         }
         x if x == WM_TIMER => {
             if let Some(shared) = shared_of(hwnd) {
-                use windows::Win32::Graphics::Gdi::InvalidateRect;
-                use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_SHOW};
+                adjust(hwnd, shared);
                 if shared.visible.load(Ordering::Relaxed) {
-                    if shared.active.load(Ordering::Relaxed) {
-                        follow_tray(hwnd);
-                        let _ = ShowWindow(hwnd, SW_SHOW);
-                    } else if try_dock(hwnd) {
-                        shared.active.store(true, Ordering::Relaxed);
-                        let _ = ShowWindow(hwnd, SW_SHOW);
-                    }
+                    use windows::Win32::Graphics::Gdi::InvalidateRect;
                     let tip = TOOLTIP.lock().map(|t| HWND(*t as *mut _)).unwrap_or_default();
                     update_tooltip(hwnd, tip, shared);
                     let _ = InvalidateRect(hwnd, None, false);
-                } else {
-                    let _ = ShowWindow(hwnd, SW_HIDE);
                 }
             }
             LRESULT(0)
@@ -367,6 +655,7 @@ unsafe fn dock_wnd_proc(
             LRESULT(0)
         }
         x if x == WM_DESTROY => {
+            restore_tasklist();
             PostQuitMessage(0);
             LRESULT(0)
         }
@@ -374,11 +663,11 @@ unsafe fn dock_wnd_proc(
     }
 }
 
-unsafe fn paint(hwnd: windows::Win32::Foundation::HWND) {
-    use windows::Win32::Foundation::{COLORREF, RECT};
+unsafe fn paint(hwnd: HWND) {
+    use windows::Win32::Foundation::COLORREF;
     use windows::Win32::Graphics::Gdi::{
-        BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
-        SelectObject, SetBkMode, SetTextColor, TextOutW, PAINTSTRUCT, TRANSPARENT,
+        BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, FillRect, SelectObject,
+        SetBkMode, SetTextColor, TextOutW, PAINTSTRUCT, TRANSPARENT,
     };
     use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
     let Some(shared) = shared_of(hwnd) else { return };
@@ -407,14 +696,14 @@ unsafe fn paint(hwnd: windows::Win32::Foundation::HWND) {
     };
     let half = height / 2;
     let ty = |slot: i32| slot * half + ((half + font_h) / 2);
-    line(&format!("Down {down}"), ty(0), 0x0071CC_2E);
+    line(&format!("Down {down}"), ty(0), 0x0071CC2E);
     line(&format!("Up {up}"), ty(1), 0x00F6823B);
     let _ = SelectObject(hdc, old);
     let _ = DeleteObject(font);
     EndPaint(hwnd, &ps);
 }
 
-unsafe fn show_menu(hwnd: windows::Win32::Foundation::HWND, shared: &DockShared) {
+unsafe fn show_menu(hwnd: HWND, shared: &DockShared) {
     use windows::Win32::Foundation::POINT;
     use windows::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, SetForegroundWindow,
