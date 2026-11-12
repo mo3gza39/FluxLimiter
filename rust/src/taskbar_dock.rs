@@ -95,6 +95,16 @@ enum Mode {
 struct DockRt {
     mode: Mode,
     parent: HWND,
+    /// Windows 11: the dock is NOT a child window. On the user's
+    /// Windows 11 (build 26200) a plain child of Shell_TrayWnd
+    /// docked and reported itself visible yet was never seen —
+    /// the tray's XAML composition surface paints over plain
+    /// children (the reason TrafficMonitor defaults to
+    /// DirectComposition rendering there). So on Win11 the dock
+    /// stays a topmost popup glued over the tray at the same
+    /// coordinates — the same fallback TrafficMonitor itself
+    /// uses when it cannot insert its window into the taskbar.
+    is_popup: bool,
     tasklist: HWND,
     /// Task-list rect (parent-client coords) before we shrank it.
     tasklist_orig: Option<RECT>,
@@ -111,6 +121,7 @@ impl DockRt {
         Self {
             mode: Mode::None,
             parent: HWND::default(),
+            is_popup: false,
             tasklist: HWND::default(),
             tasklist_orig: None,
             tasklist_shrunk: false,
@@ -296,8 +307,8 @@ unsafe fn try_dock(hwnd: HWND) -> bool {
     };
 
     // Parent choice by OS version, TrafficMonitor-style: the
-    // rebar on the classical taskbar, the tray itself on
-    // Windows 11.
+    // rebar on the classical taskbar. On Windows 11 there is no
+    // parent: the dock stays a topmost popup (see DockRt).
     let (mode, parent) = if is_windows_11() {
         (Mode::Win11, tray)
     } else {
@@ -309,17 +320,33 @@ unsafe fn try_dock(hwnd: HWND) -> bool {
             }
         }
     };
-    if SetParent(hwnd, parent).is_err() {
-        log_line("SetParent failed");
-        return false;
+    if mode == Mode::Win11 {
+        // Tool-window (no taskbar button), never activates.
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE,
+            WS_EX_TOOLWINDOW,
+        };
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        SetWindowLongPtrW(
+            hwnd,
+            GWL_EXSTYLE,
+            ex | WS_EX_TOOLWINDOW.0 as isize | WS_EX_NOACTIVATE.0 as isize,
+        );
+        RT.with(|rt| rt.borrow_mut().is_popup = true);
+        log_line("win11: topmost popup mode (no SetParent)");
+    } else {
+        if SetParent(hwnd, parent).is_err() {
+            log_line("SetParent failed");
+            return false;
+        }
+        // Popup -> child, now that it has a parent.
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, WS_CHILD, WS_POPUP,
+        };
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let child_style = (style & !(WS_POPUP.0 as isize)) | WS_CHILD.0 as isize;
+        SetWindowLongPtrW(hwnd, GWL_STYLE, child_style);
     }
-    // Popup -> child, now that it has a parent.
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, WS_CHILD, WS_POPUP,
-    };
-    let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-    let child_style = (style & !(WS_POPUP.0 as isize)) | WS_CHILD.0 as isize;
-    SetWindowLongPtrW(hwnd, GWL_STYLE, child_style);
 
     let mut tasklist = HWND::default();
     if mode == Mode::Classical {
@@ -393,11 +420,22 @@ unsafe fn position(hwnd: HWND, force: bool) {
         force || rt.last_sig != sig || !rt.docked
     });
     if !need {
+        // Already placed; still make sure it is shown (e.g. the
+        // taskbar just came back from auto-hide).
+        use windows::Win32::UI::WindowsAndMessaging::{ShowWindow as SW2, SW_SHOW as SS2};
+        let _ = SW2(hwnd, SS2);
         return;
     }
 
+    let is_popup = RT.with(|rt| rt.borrow().is_popup);
     let parent = GetParent(hwnd).unwrap_or_default();
-    let Some(parent_rect) = win_rect(parent) else {
+    // A popup has no parent; give the math a neutral rect (the
+    // Win11 arm uses screen coordinates and ignores it).
+    let Some(parent_rect) = (if is_popup {
+        Some(RECT::default())
+    } else {
+        win_rect(parent)
+    }) else {
         return;
     };
     let (x, y, height) = RT.with(|rt| {
@@ -452,21 +490,43 @@ unsafe fn position(hwnd: HWND, force: bool) {
             _ => {
                 // Windows 11: next to the notification area,
                 // vertically centered on the Start button height.
+                // Popup mode uses SCREEN coordinates; the (never
+                // used) child variant would use tray-client ones.
                 let start_h = find_child(tray, "Start")
                     .and_then(|h| win_rect(h))
                     .map(|r| r.bottom - r.top)
                     .unwrap_or(bar_h);
                 let h = start_h;
-                let x = (notify_rect.left - parent_rect.left) - width + 2;
-                let y = (start_h - h) / 2 + (bar_h - start_h);
-                (x, y, h)
+                if rt.is_popup {
+                    let x = notify_rect.left - width + 2;
+                    let y = tray_rect.top + (start_h - h) / 2 + (bar_h - start_h);
+                    (x, y, h)
+                } else {
+                    let x = (notify_rect.left - parent_rect.left) - width + 2;
+                    let y = (start_h - h) / 2 + (bar_h - start_h);
+                    (x, y, h)
+                }
             }
         }
     });
     if height == 0 {
         return;
     }
-    let _ = MoveWindow(hwnd, x, y, width, height, true);
+    if is_popup {
+        use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE};
+        // HWND_TOPMOST: stays above the tray's own surface.
+        let _ = SetWindowPos(
+            hwnd,
+            HWND(-1 as isize as *mut std::ffi::c_void),
+            x,
+            y,
+            width,
+            height,
+            SWP_NOACTIVATE,
+        );
+    } else {
+        let _ = MoveWindow(hwnd, x, y, width, height, true);
+    }
     let _ = ShowWindow(hwnd, SW_SHOW);
     RT.with(|rt| {
         rt.borrow_mut().last_sig = sig;
@@ -516,24 +576,70 @@ unsafe fn adjust(hwnd: HWND, shared: &DockShared) {
         return;
     }
     // Explorer may have restarted: parent gone means re-dock.
+    // For the popup there is no parent; instead the tray must
+    // still exist and be visible (an auto-hidden taskbar hides
+    // the dock with it).
     use windows::Win32::UI::WindowsAndMessaging::GetParent;
-    let parent_ok = RT.with(|rt| {
-        let rt = rt.borrow();
-        GetParent(hwnd).map(|p| p == rt.parent).unwrap_or(false)
-    });
-    if !parent_ok {
-        restore_tasklist();
-        RT.with(|rt| {
-            let mut rt = rt.borrow_mut();
-            rt.docked = false;
-            rt.mode = Mode::None;
+    let is_popup = RT.with(|rt| rt.borrow().is_popup);
+    if is_popup {
+        let tray_now = {
+            let cls = wide("Shell_TrayWnd");
+            use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
+            FindWindowW(windows::core::PCWSTR(cls.as_ptr()), None)
+                .ok()
+                .filter(|h| !h.0.is_null())
+        };
+        match tray_now {
+            None => {
+                RT.with(|rt| {
+                    let mut rt = rt.borrow_mut();
+                    rt.docked = false;
+                    rt.mode = Mode::None;
+                    rt.is_popup = false;
+                });
+                shared.active.store(false, Ordering::Relaxed);
+                log_line("tray lost (Explorer restart?); will re-dock");
+                return;
+            }
+            Some(t) if !IsWindowVisible(t).as_bool() => {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+                shared.active.store(false, Ordering::Relaxed);
+                return;
+            }
+            _ => {}
+        }
+    } else {
+        let parent_ok = RT.with(|rt| {
+            let rt = rt.borrow();
+            GetParent(hwnd).map(|p| p == rt.parent).unwrap_or(false)
         });
-        shared.active.store(false, Ordering::Relaxed);
-        log_line("parent lost (Explorer restart?); will re-dock");
-        return;
+        if !parent_ok {
+            restore_tasklist();
+            RT.with(|rt| {
+                let mut rt = rt.borrow_mut();
+                rt.docked = false;
+                rt.mode = Mode::None;
+            });
+            shared.active.store(false, Ordering::Relaxed);
+            log_line("parent lost (Explorer restart?); will re-dock");
+            return;
+        }
     }
     position(hwnd, false);
-    let _ = BringWindowToTop(hwnd);
+    if is_popup {
+        use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
+        let _ = SetWindowPos(
+            hwnd,
+            HWND(-1 as isize as *mut std::ffi::c_void),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+        );
+    } else {
+        let _ = BringWindowToTop(hwnd);
+    }
 
     // Verification gate: believe "active" only when the window
     // really is on the bar.
