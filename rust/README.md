@@ -54,11 +54,12 @@ was marked unverified in the repo's own status docs.
   the tray — two lines (↓/↑), no themes, per the user's request.
   Hovering it shows today's and this month's usage; right-clicking
   it opens a menu (Open FluxLimiter, bits toggle, Hide, Exit).
-* ✅ Application icon: the blue bars mark from the project's
-  reference design, set on the window, embedded into the .exe
-  files by `build.rs`, and shown as the real icon texture in the
-  sidebar (the icon travels as base85 text in `assets/` because
-  this project's sync channel is text-only).
+* ✅ Application icon: a speedometer mark in the project's own
+  palette (navy #102B48, cyan #1FD1EF, orange #F59D10 — chosen by
+  the user from reference concepts), set on the window, embedded
+  into the .exe files by `build.rs`, and shown as the real icon
+  texture in the sidebar (the icon travels as base85 text in
+  `assets/` because this project's sync channel is text-only).
 * ✅ Right-click menu on application rows (table and Top
   Applications): Open file location, Properties, Copy path,
   Block/Unblock (`src/shell_actions.rs`, Windows Explorer verbs).
