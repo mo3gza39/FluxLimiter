@@ -1,0 +1,45 @@
+name: Rust build
+
+on:
+  push:
+    branches: [rust]
+    paths:
+      - "rust/**"
+      - ".github/workflows/rust-build.yml"
+  pull_request:
+    paths:
+      - "rust/**"
+      - ".github/workflows/rust-build.yml"
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable, MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test
+        working-directory: rust
+        run: cargo test --release 2>&1 | Tee-Object -FilePath cargo-test.log
+
+      - name: Build release
+        working-directory: rust
+        run: cargo build --release 2>&1 | Tee-Object -FilePath cargo-build.log
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-build-logs
+          path: |
+            rust/cargo-test.log
+            rust/cargo-build.log
+
+      - name: Upload FluxLimiter.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: FluxLimiter-rust-windows
+          path: rust/target/release/fluxlimiter.exe
