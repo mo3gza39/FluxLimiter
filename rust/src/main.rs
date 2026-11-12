@@ -131,6 +131,9 @@ struct FluxApp {
     history: Vec<(f32, f32)>,
     /// Pending request from the taskbar strip's context menu.
     strip_action: Arc<Mutex<Option<StripAction>>>,
+    /// Whether the strip has been given its initial position
+    /// (bottom-right, next to the tray) yet.
+    strip_placed: bool,
     /// The real app icon as a GPU texture for the sidebar logo,
     /// loaded once from the same RGBA bytes as the window icon.
     logo: Option<egui::TextureHandle>,
@@ -151,6 +154,7 @@ impl Default for FluxApp {
             search: String::new(),
             history: Vec::new(),
             strip_action: Arc::new(Mutex::new(None)),
+            strip_placed: false,
             logo: None,
         }
     }
@@ -222,7 +226,7 @@ impl FluxApp {
         ui.painter().add(egui::Shape::line(points, Stroke::new(1.5_f32, color)));
     }
 
-    fn taskbar_strip(&self, ctx: &egui::Context) {
+    fn taskbar_strip(&mut self, ctx: &egui::Context) {
         if !self.show_strip {
             return;
         }
@@ -238,14 +242,28 @@ impl FluxApp {
         );
         let use_bits = self.use_bits;
         let action_slot = self.strip_action.clone();
+        let mut builder = egui::ViewportBuilder::default()
+            .with_title("FluxLimiter speed")
+            .with_inner_size([200.0, 46.0])
+            .with_decorations(false)
+            .with_always_on_top()
+            .with_taskbar(false);
+        if !self.strip_placed {
+            // First run only: start next to the tray (bottom-right
+            // of the monitor, above the taskbar) instead of the
+            // OS default spot. After that the user can drag it
+            // wherever they like and it stays there.
+            if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
+                builder = builder.with_position([
+                    (monitor.x - 216.0).max(0.0),
+                    (monitor.y - 100.0).max(0.0),
+                ]);
+            }
+            self.strip_placed = true;
+        }
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("taskbar_strip"),
-            egui::ViewportBuilder::default()
-                .with_title("FluxLimiter speed")
-                .with_inner_size([200.0, 46.0])
-                .with_decorations(false)
-                .with_always_on_top()
-                .with_taskbar(false),
+            builder,
             move |vctx, _| {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::none().fill(Color32::from_rgb(11, 21, 32)))
