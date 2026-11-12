@@ -1,3 +1,4 @@
+pub mod firewall;
 pub mod format;
 pub mod monitor;
 pub mod protocol;
