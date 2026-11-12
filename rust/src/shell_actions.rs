@@ -6,13 +6,34 @@
 //! disables the menu items instead of pretending.
 
 /// Open Explorer with the executable selected ("Open file location").
+///
+/// Goes through ShellExecute so the `/select,"..."` parameter
+/// reaches Explorer verbatim — passing it as a `Command` argument
+/// gets the embedded quotes re-escaped by the runtime, and
+/// Explorer then falls back to opening a default folder instead.
 pub fn open_file_location(exe_path: &str) -> bool {
     #[cfg(windows)]
     {
-        return std::process::Command::new("explorer")
-            .arg(format!("/select,\"{exe_path}\""))
-            .spawn()
-            .is_ok();
+        use windows::core::{w, PCWSTR};
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::Shell::ShellExecuteW;
+
+        let params: Vec<u16> = format!("/select,\"{exe_path}\"")
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let result = unsafe {
+            ShellExecuteW(
+                HWND(std::ptr::null_mut()),
+                w!("open"),
+                w!("explorer.exe"),
+                PCWSTR(params.as_ptr()),
+                PCWSTR::null(),
+                windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+            )
+        };
+        // ShellExecute returns a pseudo-handle > 32 on success.
+        return result.0 as isize > 32;
     }
     #[cfg(not(windows))]
     {
