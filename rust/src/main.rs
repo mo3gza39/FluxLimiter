@@ -131,6 +131,9 @@ struct FluxApp {
     history: Vec<(f32, f32)>,
     /// Pending request from the taskbar strip's context menu.
     strip_action: Arc<Mutex<Option<StripAction>>>,
+    /// The real app icon as a GPU texture for the sidebar logo,
+    /// loaded once from the same RGBA bytes as the window icon.
+    logo: Option<egui::TextureHandle>,
 }
 
 impl Default for FluxApp {
@@ -148,6 +151,7 @@ impl Default for FluxApp {
             search: String::new(),
             history: Vec::new(),
             strip_action: Arc::new(Mutex::new(None)),
+            logo: None,
         }
     }
 }
@@ -346,6 +350,22 @@ impl eframe::App for FluxApp {
         }
         self.taskbar_strip(ctx);
 
+        // Load the real app icon as a texture once (same RGBA bytes
+        // as the window icon); the sidebar shows it instead of a
+        // hand-drawn copy of the mark.
+        if self.logo.is_none() {
+            let rgba = b85_decode(include_str!("../assets/icon_rgba.b85"));
+            if rgba.len() == 64 * 64 * 4 {
+                let image = egui::ColorImage::from_rgba_unmultiplied([64, 64], &rgba);
+                self.logo = Some(ctx.load_texture(
+                    "fluxlimiter-logo",
+                    image,
+                    egui::TextureOptions::default(),
+                ));
+            }
+        }
+        let logo = self.logo.clone();
+
         // ---------- sidebar ----------
         egui::SidePanel::left("sidebar")
             .exact_width(208.0)
@@ -357,22 +377,31 @@ impl eframe::App for FluxApp {
             .show(ctx, |ui| {
                 ui.add_space(16.0);
                 ui.horizontal(|ui| {
-                    // Logo mark: the project's own icon - a blue tile
-                    // with three ascending white bars (from the
-                    // reference design in the repo).
-                    let (rect, _) = ui.allocate_exact_size(Vec2::new(34.0, 34.0), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, 8.0, Color32::from_rgb(2, 124, 240));
-                    let base = rect.max.y - 7.0;
-                    for (i, h) in [8.0_f32, 13.0, 18.0].iter().enumerate() {
-                        let bx = rect.min.x + 7.0 + i as f32 * 8.0;
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_max(
-                                egui::pos2(bx, base - h),
-                                egui::pos2(bx + 5.0, base),
-                            ),
-                            1.5,
-                            Color32::WHITE,
-                        );
+                    // Logo mark: the project's real icon (blue tile,
+                    // three ascending white bars, from the reference
+                    // design in the repo). The drawn tile below is
+                    // only a fallback if the texture failed to load.
+                    match &logo {
+                        Some(tex) => {
+                            ui.add(egui::Image::new((tex.id(), Vec2::new(34.0, 34.0))));
+                        }
+                        None => {
+                            let (rect, _) =
+                                ui.allocate_exact_size(Vec2::new(34.0, 34.0), egui::Sense::hover());
+                            ui.painter().rect_filled(rect, 8.0, Color32::from_rgb(2, 124, 240));
+                            let base = rect.max.y - 7.0;
+                            for (i, h) in [8.0_f32, 13.0, 18.0].iter().enumerate() {
+                                let bx = rect.min.x + 7.0 + i as f32 * 8.0;
+                                ui.painter().rect_filled(
+                                    egui::Rect::from_min_max(
+                                        egui::pos2(bx, base - h),
+                                        egui::pos2(bx + 5.0, base),
+                                    ),
+                                    1.5,
+                                    Color32::WHITE,
+                                );
+                            }
+                        }
                     }
                     ui.vertical(|ui| {
                         ui.label(RichText::new("FluxLimiter").size(16.0).strong().color(TEXT));
