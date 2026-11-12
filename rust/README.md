@@ -61,9 +61,16 @@ was marked unverified in the repo's own status docs.
   fallback — two lines, no themes, per the user's request.
 * ✅ Blocking is real in standalone mode: toggling Block applies
   Windows Firewall rules for the executable (both directions)
-  from the GUI via elevated `netsh` (`src/firewall.rs`), with the
-  outcome reported under the banner. (The service will own this
-  once the GUI is wired to it.)
+  from the GUI via elevated `netsh` (`src/firewall.rs`). The
+  flow checks which rules already exist first (so it only
+  prompts for real changes) and reads the rules back afterwards
+  to verify them; the outcome shows under the banner. (The
+  service will own this once the GUI is wired to it.)
+* ✅ Sidebar pages are all live: Dashboard, Applications (the
+  full table on its own page), Rules (every saved rule with
+  block toggles and delete), Monthly Usage (per-day totals and
+  the quota), Statistics (today / 7 days / month / all recorded
+  plus a 14-day breakdown).
 * ✅ Application icon: a speedometer mark in the project's own
   palette (navy #102B48, cyan #1FD1EF, orange #F59D10 — chosen by
   the user from reference concepts), set on the window, embedded
