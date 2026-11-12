@@ -108,6 +108,12 @@ pub fn active_apps() -> Vec<AppTraffic> {
             AppTraffic { pid, name, exe_path, connections }
         })
         .collect();
-    apps.sort_by_key(|a| std::cmp::Reverse(a.connections));
+    // Most connections first; name as a stable tiebreak so rows
+    // do not swap places every second when counts are equal.
+    apps.sort_by(|a, b| {
+        b.connections
+            .cmp(&a.connections)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
     apps
 }
