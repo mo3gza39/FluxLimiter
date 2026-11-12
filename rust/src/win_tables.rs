@@ -93,21 +93,42 @@ pub fn active_apps() -> Vec<AppTraffic> {
     }
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
-    let mut apps: Vec<AppTraffic> = counts
-        .into_iter()
-        .map(|(pid, connections)| {
-            let (name, exe_path) = sys
-                .process(sysinfo::Pid::from_u32(pid))
-                .map(|p| {
-                    (
-                        p.name().to_string_lossy().into_owned(),
-                        p.exe().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default(),
-                    )
-                })
-                .unwrap_or_else(|| (format!("PID {pid}"), String::new()));
-            AppTraffic { pid, name, exe_path, connections }
-        })
-        .collect();
+    // Aggregate per executable (the product rule: one entry per
+    // exe path, shared by all its PIDs — same as the rules).
+    // Showing one row per PID made multi-process apps (browsers!)
+    // appear several times and made a single Block look like it
+    // "spread" across the list when all its rows flipped at once.
+    let mut by_exe: std::collections::HashMap<String, AppTraffic> = std::collections::HashMap::new();
+    for (pid, connections) in counts {
+        let (name, exe_path) = sys
+            .process(sysinfo::Pid::from_u32(pid))
+            .map(|p| {
+                (
+                    p.name().to_string_lossy().into_owned(),
+                    p.exe().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default(),
+                )
+            })
+            .unwrap_or_else(|| (format!("PID {pid}"), String::new()));
+        // Unresolved paths stay per-PID: merging unknowns by an
+        // empty key would fuse unrelated processes into one row.
+        let key = if exe_path.is_empty() {
+            format!("pid:{pid}")
+        } else {
+            exe_path.to_ascii_lowercase()
+        };
+        match by_exe.get_mut(&key) {
+            Some(existing) => {
+                if connections > existing.connections {
+                    existing.pid = pid;
+                }
+                existing.connections += connections;
+            }
+            None => {
+                by_exe.insert(key, AppTraffic { pid, name, exe_path, connections });
+            }
+        }
+    }
+    let mut apps: Vec<AppTraffic> = by_exe.into_values().collect();
     // Most connections first; name as a stable tiebreak so rows
     // do not swap places every second when counts are equal.
     apps.sort_by(|a, b| {
