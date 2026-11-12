@@ -571,6 +571,11 @@ impl FluxApp {
                     let prev_blocked = rule.blocked;
                     let mut changed = false;
                     let mut name_resp: Option<egui::Response> = None;
+                    // Stable per-row id scope: without it, egui's
+                    // auto ids in a loop can collide/shift as the
+                    // app list changes, and a click can land on
+                    // the wrong row (or several).
+                    ui.push_id(&app.exe_path, |ui| {
                     ui.horizontal(|ui| {
                         name_resp = Some(ui.add_sized(
                             [240.0, 20.0],
@@ -606,6 +611,7 @@ impl FluxApp {
                             rule.blocked = !rule.blocked;
                             changed = true;
                         }
+                    });
                     });
                     if changed {
                         let now_blocked = rule.blocked;
@@ -665,6 +671,7 @@ impl FluxApp {
         let count = rules.len();
         Self::card(ui, |ui| {
             for (i, rule) in rules.iter().enumerate() {
+                ui.push_id(&rule.exe_path, |ui| {
                 ui.horizontal(|ui| {
                     ui.add_sized([200.0, 20.0], egui::Label::new(RichText::new(&rule.name).strong().color(TEXT)));
                     ui.add_sized([150.0, 20.0], egui::Label::new(format!("Down {} / Up {}", limit_label(rule.limit_down_kbps.clone()), limit_label(rule.limit_up_kbps.clone()))));
@@ -681,6 +688,7 @@ impl FluxApp {
                     if ui.add_sized([58.0, 22.0], egui::Button::new("Delete")).clicked() {
                         delete = Some(rule.clone());
                     }
+                });
                 });
                 ui.label(RichText::new(&rule.exe_path).color(MUTED).size(10.5));
                 if i + 1 < count {
