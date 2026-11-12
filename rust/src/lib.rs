@@ -4,6 +4,7 @@ pub mod protocol;
 pub mod rate_limiter;
 pub mod rules;
 pub mod service;
+pub mod shell_actions;
 pub mod stats;
 
 #[cfg(windows)]
