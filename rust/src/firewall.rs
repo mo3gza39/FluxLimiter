@@ -1,12 +1,15 @@
 //! Windows Firewall enforcement for blocked rules, applied by
 //! the GUI itself (standalone mode) through `netsh advfirewall`,
 //! elevated with the "runas" verb — the user approves a UAC
-//! prompt per change. This mirrors what the project's C# build
-//! did from its service: one block rule per direction, named
-//! after the executable so it can be found and removed again.
+//! prompt per change. One block rule per direction, named after
+//! the executable so it can be found and removed again.
 //!
-//! The permanent home for this is the service (which runs as
-//! SYSTEM and needs no prompt); until the GUI is wired to the
+//! The flow first checks (unelevated) whether each rule already
+//! exists, so a toggle only prompts for the changes it actually
+//! needs, and afterwards verifies the final state — a rule that
+//! claims success but is not really there is reported as an
+//! error, not hidden. The permanent home for this is the
+//! service (SYSTEM, no prompts); until the GUI is wired to the
 //! service, this keeps Block honest instead of saved-only.
 
 fn rule_name(exe_path: &str, dir: &str) -> String {
@@ -14,34 +17,71 @@ fn rule_name(exe_path: &str, dir: &str) -> String {
 }
 
 /// Apply (`blocked = true`) or remove the firewall block for an
-/// executable. Err carries a short user-facing reason.
-pub fn set_blocked(exe_path: &str, blocked: bool) -> Result<(), String> {
+/// executable. On success returns the executable path the rules
+/// point at, verified by reading the rules back.
+pub fn set_blocked(exe_path: &str, blocked: bool) -> Result<String, String> {
     #[cfg(windows)]
     {
         for dir in ["out", "in"] {
             let name = rule_name(exe_path, dir);
-            // Always clear any stale rule first (also the whole
-            // job when unblocking). Deleting a rule that does not
-            // exist makes netsh exit non-zero — that is fine.
-            run_netsh(
-                &format!("advfirewall firewall delete rule name=\"{name}\""),
-                true,
-            )?;
+            let (exists, program_ok) = inspect_rule(&name, exe_path);
             if blocked {
-                run_netsh(
-                    &format!(
-                        "advfirewall firewall add rule name=\"{name}\" dir={dir} action=block program=\"{exe_path}\" enable=yes profile=any"
-                    ),
-                    false,
-                )?;
+                if exists && !program_ok {
+                    // Stale rule for a different program under our
+                    // name: replace it.
+                    run_netsh(&format!("advfirewall firewall delete rule name=\"{name}\""), true)?;
+                    run_netsh(&add_params(&name, dir, exe_path), false)?;
+                } else if !exists {
+                    run_netsh(&add_params(&name, dir, exe_path), false)?;
+                }
+            } else if exists {
+                run_netsh(&format!("advfirewall firewall delete rule name=\"{name}\""), false)?;
             }
         }
-        Ok(())
+        // Verify the end state instead of trusting exit codes.
+        for dir in ["out", "in"] {
+            let name = rule_name(exe_path, dir);
+            let (exists, program_ok) = inspect_rule(&name, exe_path);
+            if blocked && !(exists && program_ok) {
+                return Err(format!(
+                    "the {dir} rule could not be verified in Windows Firewall"
+                ));
+            }
+            if !blocked && exists {
+                return Err(format!("the {dir} rule is still present in Windows Firewall"));
+            }
+        }
+        Ok(exe_path.to_string())
     }
     #[cfg(not(windows))]
     {
         let _ = (exe_path, blocked);
         Err("Windows only".to_string())
+    }
+}
+
+fn add_params(name: &str, dir: &str, exe_path: &str) -> String {
+    format!(
+        "advfirewall firewall add rule name=\"{name}\" dir={dir} action=block program=\"{exe_path}\" enable=yes profile=any"
+    )
+}
+
+/// Read a rule back (no elevation needed). Returns whether it
+/// exists and whether its program path matches `exe_path`.
+#[cfg(windows)]
+fn inspect_rule(name: &str, exe_path: &str) -> (bool, bool) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let output = std::process::Command::new("netsh")
+        .args(["advfirewall", "firewall", "show", "rule", &format!("name={name}")])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    match output {
+        Ok(out) if out.status.success() => {
+            let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
+            (true, text.contains(&exe_path.to_lowercase()))
+        }
+        _ => (false, false),
     }
 }
 
