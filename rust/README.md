@@ -10,6 +10,18 @@ useful work was audited before a line of Rust was written:
 * the **Python + PySide6 prototype** built in chat — now only a design
   reference.
 
+## Screenshots
+
+The dashboard of the running app, under real traffic (live download):
+
+![FluxLimiter dashboard](docs/screenshots/dashboard.png)
+
+Captured from the actual running build (the UI is egui, so it renders
+identically on Windows). The active-applications table is empty in
+this capture because per-app connection tables are Windows-only
+(IP Helper); on Windows it fills in. Nothing in the shot is mocked:
+the speeds and the 162 MB daily total are the app's own live counters.
+
 ## What was carried over from the C# project (and what was not)
 
 Carried over (designs, semantics and verified logic — reimplemented in Rust):
@@ -42,8 +54,29 @@ was marked unverified in the repo's own status docs.
   the tray — two lines (↓/↑), no themes, per the user's request.
 * ✅ Active applications on Windows from the IP Helper extended
   TCP/UDP tables (`src/win_tables.rs`); honestly empty elsewhere.
-* ⏳ Service binary speaking protocol v1 (pipe server) — `protocol.rs`
-  is ready, the Windows service host is next.
+* ✅ Service binary speaking protocol v1 (`src/service.rs` +
+  `src/bin/fluxlimiter-service.rs`): dispatch for ping, getStatus,
+  getSnapshot, getRules, setRule, deleteRule; refuses `blocked`
+  rules for `C:\Windows` / FluxLimiter itself and a 0 KB/s limit;
+  `syncFirewall` is an honest not-implemented error. Named-pipe
+  transport on Windows (`\\.\pipe\FluxLimiter.Control`) with the
+  spec's pipe security applied (SDDL: network SID denied, SYSTEM /
+  administrators full control, users read-write; first-instance
+  ownership), framed stdin/stdout elsewhere so the logic is
+  testable; verified live over stdio (ping → setRule → getRules →
+  getStatus all OK) and cross-built for Windows (GUI-subsystem GUI
+  exe + console-subsystem service exe). Limits are still stored,
+  not enforced — the driver engine remains the open milestone.
+  The GUI does not talk to the service yet; wiring it in is the
+  next step.
+  
+  One divergence to know about: the C# service that was actually
+  implemented speaks a smaller dialect (pipe `FluxLimiter.Service.v1`,
+  64 KiB frames, only `ping` / `status.get` / `driver.status`).
+  This Rust line follows the project's written v1 spec instead —
+  the richer rules/snapshot command set on
+  `\\.\pipe\FluxLimiter.Control` with 1 MiB frames — so the Rust
+  service is not a drop-in pipe replacement for the C# GUI.
 * ⏳ ETW per-app accounting (phase 1b, `ferrisetw`).
 * ⏳ Enforcement engine (phase 2): WinDivert packet loop paced by
   `rate_limiter.rs`, or WFP driver — decision gate in the C# repo's
@@ -56,6 +89,7 @@ cargo build --release
 cargo test
 ```
 
-On Windows this produces a single `fluxlimiter.exe` (a few MB, no
-runtime to install). Run it as administrator for the full connection
+On Windows this produces `fluxlimiter.exe` (the GUI, a few MB, no
+runtime to install) and `fluxlimiter-service.exe` (the headless
+service). Run the GUI as administrator for the full connection
 tables.
