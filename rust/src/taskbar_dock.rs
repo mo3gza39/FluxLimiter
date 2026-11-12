@@ -219,6 +219,41 @@ unsafe fn win_rect(hwnd: HWND) -> Option<RECT> {
     GetWindowRect(hwnd, &mut r).ok().map(|_| r)
 }
 
+/// Windows 11 or later, decided by the OS build number from the
+/// registry (>= 22000), the same way TrafficMonitor picks its
+/// implementation by Windows version. Probing the tray for a
+/// `WorkerW` child instead is wrong: Windows 11's tray can
+/// contain one too, which misroutes to the classical path (whose
+/// task-list window does not exist there) and docking fails.
+unsafe fn is_windows_11() -> bool {
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Registry::{
+        RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ,
+    };
+    let subkey = wide("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion");
+    let value = wide("CurrentBuildNumber");
+    let mut buf = [0u16; 32];
+    let mut size = (buf.len() * 2) as u32;
+    let status = RegGetValueW(
+        HKEY_LOCAL_MACHINE,
+        PCWSTR(subkey.as_ptr()),
+        PCWSTR(value.as_ptr()),
+        RRF_RT_REG_SZ,
+        None,
+        Some(buf.as_mut_ptr() as *mut std::ffi::c_void),
+        Some(&mut size),
+    );
+    if status.0 != 0 {
+        log_line("CurrentBuildNumber read failed; assuming Windows 11");
+        return true;
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let text = String::from_utf16_lossy(&buf[..len]);
+    let build: u32 = text.trim().parse().unwrap_or(0);
+    log_line(&format!("OS build {build}"));
+    build >= 22000
+}
+
 unsafe fn find_child(parent: HWND, class: &str) -> Option<HWND> {
     use windows::Win32::UI::WindowsAndMessaging::FindWindowExW;
     let cls = wide(class);
@@ -260,13 +295,19 @@ unsafe fn try_dock(hwnd: HWND) -> bool {
         return false;
     };
 
-    // Parent choice, TrafficMonitor-style: the rebar when it
-    // exists (classical), the tray itself on Windows 11.
-    let rebar = find_child(tray, "ReBarWindow32")
-        .or_else(|| find_child(tray, "WorkerW"));
-    let (mode, parent) = match rebar {
-        Some(bar) => (Mode::Classical, bar),
-        None => (Mode::Win11, tray),
+    // Parent choice by OS version, TrafficMonitor-style: the
+    // rebar on the classical taskbar, the tray itself on
+    // Windows 11.
+    let (mode, parent) = if is_windows_11() {
+        (Mode::Win11, tray)
+    } else {
+        match find_child(tray, "ReBarWindow32") {
+            Some(bar) => (Mode::Classical, bar),
+            None => {
+                log_line("classical taskbar but ReBarWindow32 not found");
+                return false;
+            }
+        }
     };
     if SetParent(hwnd, parent).is_err() {
         log_line("SetParent failed");
