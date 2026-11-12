@@ -73,6 +73,28 @@ fn app_icon() -> egui::IconData {
     }
 }
 
+/// The sidebar's main pages.
+#[derive(Clone, Copy, PartialEq)]
+enum Page {
+    Dashboard,
+    Applications,
+    Rules,
+    Monthly,
+    Statistics,
+}
+
+impl Page {
+    fn title(self) -> &'static str {
+        match self {
+            Page::Dashboard => "Dashboard",
+            Page::Applications => "Applications",
+            Page::Rules => "Rules",
+            Page::Monthly => "Monthly Usage",
+            Page::Statistics => "Statistics",
+        }
+    }
+}
+
 /// Actions the taskbar strip's context menu can request; the main
 /// window drains this once per frame.
 #[derive(Clone, Copy, PartialEq)]
@@ -144,6 +166,8 @@ struct FluxApp {
     /// (message, is_error). Shown under the banner.
     fw_result: Arc<Mutex<Option<(String, bool)>>>,
     fw_note: Option<(String, bool)>,
+    /// Currently shown sidebar page.
+    page: Page,
     /// The real app icon as a GPU texture for the sidebar logo,
     /// loaded once from the same RGBA bytes as the window icon.
     logo: Option<egui::TextureHandle>,
@@ -176,6 +200,7 @@ impl Default for FluxApp {
             dock,
             fw_result: Arc::new(Mutex::new(None)),
             fw_note: None,
+            page: Page::Dashboard,
             logo: None,
         }
     }
@@ -361,6 +386,415 @@ impl FluxApp {
             },
         );
     }
+    fn dashboard_body(&mut self, ui: &mut egui::Ui) {
+        // ---- stat cards ----
+        let (d_down, d_up) = self.stats.today();
+        let (m_down, m_up) = self.stats.current_month();
+        let month_total = m_down + m_up;
+        let quota = MONTHLY_QUOTA_GB * 1024 * 1024 * 1024;
+        let month_frac = month_total as f32 / quota as f32;
+        ui.columns(4, |cols| {
+            Self::card(&mut cols[0], |ui| {
+                ui.set_min_height(118.0);
+                Self::card_label(ui, "Download", GREEN);
+                ui.label(RichText::new(format_speed(self.snap.down_bps, self.use_bits)).size(21.0).strong().color(TEXT));
+                ui.add_space(4.0);
+                Self::sparkline(ui, &self.history, 0, GREEN);
+            });
+            Self::card(&mut cols[1], |ui| {
+                ui.set_min_height(118.0);
+                Self::card_label(ui, "Upload", BLUE);
+                ui.label(RichText::new(format_speed(self.snap.up_bps, self.use_bits)).size(21.0).strong().color(TEXT));
+                ui.add_space(4.0);
+                Self::sparkline(ui, &self.history, 1, BLUE);
+            });
+            Self::card(&mut cols[2], |ui| {
+                ui.set_min_height(118.0);
+                Self::card_label(ui, "Daily Usage", MUTED);
+                ui.label(RichText::new(format_bytes(d_down + d_up)).size(21.0).strong().color(TEXT));
+                ui.label(RichText::new(format!("Down {}   Up {}", format_bytes(d_down), format_bytes(d_up))).color(MUTED).size(11.0));
+                ui.add_space(6.0);
+                Self::progress_bar(ui, (d_down + d_up) as f32 / quota as f32, BLUE);
+                ui.label(RichText::new("Share of the monthly quota").color(MUTED).size(10.0));
+            });
+            Self::card(&mut cols[3], |ui| {
+                ui.set_min_height(118.0);
+                Self::card_label(ui, "Monthly Usage", MUTED);
+                ui.label(RichText::new(format!("{} / {} GB", format_bytes(month_total), MONTHLY_QUOTA_GB)).size(21.0).strong().color(TEXT));
+                ui.add_space(2.0);
+                let bar_color = if month_frac >= 0.9 { RED } else if month_frac >= 0.7 { AMBER } else { GREEN };
+                Self::progress_bar(ui, month_frac, bar_color);
+                ui.label(RichText::new(format!("{:.0}% of monthly quota", month_frac * 100.0)).color(MUTED).size(11.0));
+            });
+        });
+        ui.add_space(12.0);
+
+        // ---- middle row ----
+        ui.columns(2, |cols| {
+            Self::card(&mut cols[0], |ui| {
+                ui.set_min_height(196.0);
+                ui.label(RichText::new("Top Applications").size(14.0).strong().color(TEXT));
+                ui.label(RichText::new("Ranked by active connections").color(MUTED).size(11.0));
+                ui.add_space(8.0);
+                let top: Vec<AppTraffic> = self.snap.apps.iter().take(5).cloned().collect();
+                if top.is_empty() {
+                    ui.label(RichText::new("No active connections right now.").color(MUTED));
+                }
+                let peak = top.iter().map(|a| a.connections).max().unwrap_or(1).max(1);
+                for app in top {
+                    let mut name_resp: Option<egui::Response> = None;
+                    ui.horizontal(|ui| {
+                        name_resp = Some(ui.add_sized(
+                            [150.0, 18.0],
+                            egui::Label::new(&app.name).sense(egui::Sense::click()),
+                        ));
+                        let w = 150.0 * app.connections as f32 / peak as f32;
+                        let (rect, _) = ui.allocate_exact_size(Vec2::new(160.0, 9.0), egui::Sense::hover());
+                        ui.painter().rect_filled(rect, 4.0, CARD_INNER);
+                        let mut fill = rect;
+                        fill.max.x = rect.min.x + w.max(6.0);
+                        ui.painter().rect_filled(fill, 4.0, GREEN);
+                        ui.label(RichText::new(format!("{} conn", app.connections)).color(MUTED).size(11.0));
+                    });
+                    if let Some(resp) = &name_resp {
+                        app_context_menu(resp, &app, &mut self.rules, &self.fw_result);
+                    }
+                    ui.add_space(3.0);
+                }
+            });
+            Self::card(&mut cols[1], |ui| {
+                ui.set_min_height(196.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Usage - Last 7 Days").size(14.0).strong().color(TEXT));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new("Upload").color(BLUE).strong().size(11.0));
+                        ui.label(RichText::new("Download").color(GREEN).strong().size(11.0));
+                    });
+                });
+                ui.add_space(6.0);
+                let days = self.stats.last_days(7);
+                let peak = days.iter().map(|(_, r, s)| r + s).max().unwrap_or(1).max(1) as f32;
+                let (peak_date, peak_down, peak_up) = days
+                    .iter()
+                    .max_by_key(|(_, r, s)| r + s)
+                    .map(|(d, r, s)| (d.clone(), *r, *s))
+                    .unwrap_or_default();
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 138.0), egui::Sense::hover());
+                let slot = rect.width() / days.len() as f32;
+                // baseline
+                ui.painter().line_segment(
+                    [egui::pos2(rect.min.x, rect.max.y - 18.0), egui::pos2(rect.max.x, rect.max.y - 18.0)],
+                    Stroke::new(1.0_f32, ROW_LINE),
+                );
+                for (i, (date, r, s)) in days.iter().enumerate() {
+                    let total_h = (*r + *s) as f32 / peak * 106.0;
+                    let down_h = *r as f32 / peak * 106.0;
+                    let cx = rect.min.x + slot * i as f32 + slot / 2.0;
+                    let bw = (slot * 0.5).min(42.0);
+                    let base = rect.max.y - 18.0;
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_max(
+                            egui::pos2(cx - bw / 2.0, base - down_h),
+                            egui::pos2(cx + bw / 2.0, base),
+                        ),
+                        3.0, GREEN);
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_max(
+                            egui::pos2(cx - bw / 2.0, base - total_h),
+                            egui::pos2(cx + bw / 2.0, base - down_h),
+                        ),
+                        3.0, BLUE);
+                    ui.painter().text(
+                        egui::pos2(cx, base + 3.0),
+                        egui::Align2::CENTER_TOP,
+                        &date[5..],
+                        egui::FontId::proportional(10.0),
+                        MUTED);
+                }
+                ui.label(
+                    RichText::new(format!(
+                        "Peak day {}: {} down / {} up",
+                        &peak_date[5..],
+                        format_bytes(peak_down),
+                        format_bytes(peak_up)
+                    ))
+                    .color(MUTED)
+                    .size(11.0),
+                );
+            });
+        });
+        ui.add_space(12.0);
+
+        self.apps_table_card(ui);
+    }
+
+    /// The Active Applications card (search + table), shared by
+    /// the Dashboard and the Applications page.
+    fn apps_table_card(&mut self, ui: &mut egui::Ui) {
+        // ---- active applications table ----
+        Self::card(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Active Applications").size(15.0).strong().color(TEXT));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Search applications...").desired_width(220.0));
+                });
+            });
+            ui.add_space(8.0);
+            // column headers
+            ui.horizontal(|ui| {
+                ui.add_sized([240.0, 16.0], egui::Label::new(RichText::new("APPLICATION").color(MUTED).size(10.0).strong()));
+                ui.add_sized([90.0, 16.0], egui::Label::new(RichText::new("STATUS").color(MUTED).size(10.0).strong()));
+                ui.add_sized([90.0, 16.0], egui::Label::new(RichText::new("CONNECTIONS").color(MUTED).size(10.0).strong()));
+                ui.add_sized([218.0, 16.0], egui::Label::new(RichText::new("LIMIT DOWN / UP (KB/s)").color(MUTED).size(10.0).strong()));
+                ui.add_sized([52.0, 16.0], egui::Label::new(RichText::new("RULE").color(MUTED).size(10.0).strong()));
+                ui.add_sized([64.0, 16.0], egui::Label::new(RichText::new("ACTION").color(MUTED).size(10.0).strong()));
+            });
+            let header_bottom = ui.cursor().min.y;
+            let full = ui.available_rect_before_wrap();
+            ui.painter().line_segment(
+                [egui::pos2(full.min.x, header_bottom + 2.0), egui::pos2(full.max.x, header_bottom + 2.0)],
+                Stroke::new(1.0_f32, ROW_LINE),
+            );
+            ui.add_space(6.0);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let query = self.search.to_lowercase();
+                let apps: Vec<_> = self.snap.apps.iter()
+                    .filter(|a| query.is_empty() || a.name.to_lowercase().contains(&query))
+                    .cloned()
+                    .collect();
+                if apps.is_empty() {
+                    ui.label(RichText::new("No applications with active connections.").color(MUTED));
+                }
+                let row_count = apps.len();
+                for (row_idx, app) in apps.into_iter().enumerate() {
+                    let mut rule: Rule = self.rules.get_or_default(&app.exe_path, &app.name);
+                    let prev_blocked = rule.blocked;
+                    let mut changed = false;
+                    let mut name_resp: Option<egui::Response> = None;
+                    ui.horizontal(|ui| {
+                        name_resp = Some(ui.add_sized(
+                            [240.0, 20.0],
+                            egui::Label::new(&app.name).sense(egui::Sense::click()),
+                        ));
+                        ui.add_sized([90.0, 20.0], egui::Label::new(RichText::new("Active").color(GREEN)));
+                        ui.add_sized([90.0, 20.0], egui::Label::new(format!("{} conn", app.connections)));
+                        // limit dropdowns (KB/s presets)
+                        for is_down in [true, false] {
+                            let current = if is_down { rule.limit_down_kbps } else { rule.limit_up_kbps };
+                            let mut label = limit_label(current);
+                            egui::ComboBox::from_id_salt(format!("lim-{}-{is_down}", app.exe_path))
+                                .selected_text(label.clone())
+                                .width(105.0)
+                                .show_ui(ui, |ui| {
+                                    for preset in LIMIT_PRESETS_KBPS {
+                                        if ui.selectable_value(&mut label, preset.to_string(), preset).changed() {
+                                            let v = parse_limit_kbps(&label);
+                                            if is_down { rule.limit_down_kbps = v; } else { rule.limit_up_kbps = v; }
+                                            changed = true;
+                                        }
+                                    }
+                                });
+                        }
+                        ui.add_sized([52.0, 20.0], egui::Label::new(if rule.blocked {
+                            RichText::new("Block").color(RED)
+                        } else if rule.has_limit() {
+                            RichText::new("Limit")
+                        } else {
+                            RichText::new("-").color(MUTED)
+                        }));
+                        if ui.add_sized([64.0, 22.0], egui::Button::new(if rule.blocked { "Unblock" } else { "Block" })).clicked() {
+                            rule.blocked = !rule.blocked;
+                            changed = true;
+                        }
+                    });
+                    if changed {
+                        let now_blocked = rule.blocked;
+                        self.rules.set(rule);
+                        if now_blocked != prev_blocked {
+                            queue_firewall(&self.fw_result, &app.exe_path, &app.name, now_blocked);
+                        }
+                    }
+                    if let Some(resp) = &name_resp {
+                        app_context_menu(resp, &app, &mut self.rules, &self.fw_result);
+                    }
+                    if row_idx + 1 < row_count {
+                        ui.add_space(3.0);
+                        let r = ui.available_rect_before_wrap();
+                        let y = ui.cursor().min.y;
+                        ui.painter().line_segment(
+                            [egui::pos2(r.min.x, y), egui::pos2(r.max.x, y)],
+                            Stroke::new(1.0_f32, ROW_LINE),
+                        );
+                        ui.add_space(3.0);
+                    }
+                }
+            });
+        });
+    }
+
+
+    /// Applications page: the full table on its own page.
+    fn applications_page(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            RichText::new("Every application with active connections. Right-click a row for Open file location, Properties, Copy path and Block.")
+                .color(MUTED)
+                .size(12.0),
+        );
+        ui.add_space(10.0);
+        self.apps_table_card(ui);
+    }
+
+    /// Rules page: every saved rule, with block toggles and delete.
+    fn rules_page(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            RichText::new("Saved rules - one per executable, shared by all its processes. Limits are saved, not enforced yet; blocking applies a Windows Firewall rule.")
+                .color(MUTED)
+                .size(12.0),
+        );
+        ui.add_space(10.0);
+        let mut rules = self.rules.all();
+        rules.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        if rules.is_empty() {
+            Self::card(ui, |ui| {
+                ui.label(RichText::new("No saved rules yet. Set a limit or a block from the Applications table and it will appear here.").color(MUTED));
+            });
+            return;
+        }
+        let mut toggle: Option<(String, String, bool)> = None;
+        let mut delete: Option<Rule> = None;
+        let count = rules.len();
+        Self::card(ui, |ui| {
+            for (i, rule) in rules.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.add_sized([200.0, 20.0], egui::Label::new(RichText::new(&rule.name).strong().color(TEXT)));
+                    ui.add_sized([150.0, 20.0], egui::Label::new(format!("Down {} / Up {}", limit_label(rule.limit_down_kbps.clone()), limit_label(rule.limit_up_kbps.clone()))));
+                    if rule.blocked {
+                        ui.add_sized([70.0, 20.0], egui::Label::new(RichText::new("Blocked").color(RED)));
+                    } else if rule.has_limit() {
+                        ui.add_sized([70.0, 20.0], egui::Label::new(RichText::new("Limited").color(AMBER)));
+                    } else {
+                        ui.add_sized([70.0, 20.0], egui::Label::new("-"));
+                    }
+                    if ui.add_sized([64.0, 22.0], egui::Button::new(if rule.blocked { "Unblock" } else { "Block" })).clicked() {
+                        toggle = Some((rule.exe_path.clone(), rule.name.clone(), !rule.blocked));
+                    }
+                    if ui.add_sized([58.0, 22.0], egui::Button::new("Delete")).clicked() {
+                        delete = Some(rule.clone());
+                    }
+                });
+                ui.label(RichText::new(&rule.exe_path).color(MUTED).size(10.5));
+                if i + 1 < count {
+                    ui.add_space(3.0);
+                    let r = ui.available_rect_before_wrap();
+                    let y = ui.cursor().min.y;
+                    ui.painter().line_segment([egui::pos2(r.min.x, y), egui::pos2(r.max.x, y)], Stroke::new(1.0_f32, ROW_LINE));
+                    ui.add_space(3.0);
+                }
+            }
+        });
+        if let Some((exe, name, blocked)) = toggle {
+            let mut rule = self.rules.get_or_default(&exe, &name);
+            rule.blocked = blocked;
+            self.rules.set(rule);
+            queue_firewall(&self.fw_result, &exe, &name, blocked);
+        }
+        if let Some(mut rule) = delete {
+            rule.limit_down_kbps = None;
+            rule.limit_up_kbps = None;
+            rule.blocked = false;
+            self.rules.set(rule);
+        }
+    }
+
+    /// Monthly Usage page: per-day totals for the current month.
+    fn monthly_page(&mut self, ui: &mut egui::Ui) {
+        let days = self.stats.last_days(62);
+        let prefix = days.last().map(|d| d.0[..7].to_string()).unwrap_or_default();
+        let month_days: Vec<_> = days.into_iter().filter(|d| d.0.starts_with(&prefix)).collect();
+        let (md, mu) = self.stats.current_month();
+        let total = md + mu;
+        let quota = MONTHLY_QUOTA_GB * 1024 * 1024 * 1024;
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("Month {prefix}")).color(MUTED));
+            ui.label(RichText::new(format!("Total {}", format_bytes(total))).strong().color(TEXT));
+            ui.label(RichText::new(format!("Down {} / Up {}", format_bytes(md), format_bytes(mu))).color(MUTED));
+        });
+        ui.add_space(6.0);
+        ui.add(egui::ProgressBar::new((total as f32 / quota as f32).min(1.0)).desired_width(360.0));
+        ui.label(RichText::new(format!("of the {MONTHLY_QUOTA_GB} GB monthly quota")).color(MUTED).size(11.0));
+        ui.add_space(12.0);
+        let max_day = month_days.iter().map(|d| d.1 + d.2).max().unwrap_or(1).max(1);
+        Self::card(ui, |ui| {
+            Self::card_label(ui, "Days", MUTED);
+            ui.add_space(6.0);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for (date, down, up) in month_days.iter().rev() {
+                    let day_total = down + up;
+                    ui.horizontal(|ui| {
+                        ui.add_sized([86.0, 18.0], egui::Label::new(date.as_str()));
+                        let w = (ui.available_width() - 300.0).max(60.0);
+                        let (rect, _) = ui.allocate_exact_size(Vec2::new(w, 10.0), egui::Sense::hover());
+                        ui.painter().rect_filled(rect, 3.0, CARD_INNER);
+                        let mut fill = rect;
+                        fill.max.x = fill.min.x + fill.width() * (day_total as f32 / max_day as f32);
+                        ui.painter().rect_filled(fill, 3.0, BLUE);
+                        ui.add_sized([96.0, 18.0], egui::Label::new(format_bytes(day_total)));
+                        ui.label(RichText::new(format!("D {} / U {}", format_bytes(*down), format_bytes(*up))).color(MUTED).size(11.0));
+                    });
+                    ui.add_space(4.0);
+                }
+            });
+        });
+    }
+
+    /// Statistics page: totals over recorded history.
+    fn statistics_page(&mut self, ui: &mut egui::Ui) {
+        let all = self.stats.last_days(3650);
+        let total_all: u64 = all.iter().map(|d| d.1 + d.2).sum();
+        let (td, tu) = self.stats.today();
+        let last7: u64 = self.stats.last_days(7).iter().map(|d| d.1 + d.2).sum();
+        let (md, mu) = self.stats.current_month();
+        ui.columns(4, |cols| {
+            for (i, (label, value)) in [
+                ("Today", td + tu),
+                ("Last 7 days", last7),
+                ("This month", md + mu),
+                ("All recorded", total_all),
+            ]
+            .iter()
+            .enumerate()
+            {
+                Self::card(&mut cols[i], |ui| {
+                    ui.set_min_height(64.0);
+                    Self::card_label(ui, label, MUTED);
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(format_bytes(*value)).size(19.0).strong().color(TEXT));
+                });
+            }
+        });
+        ui.add_space(12.0);
+        let days14 = self.stats.last_days(14);
+        let max_day = days14.iter().map(|d| d.1 + d.2).max().unwrap_or(1).max(1);
+        Self::card(ui, |ui| {
+            Self::card_label(ui, "Last 14 days", MUTED);
+            ui.add_space(6.0);
+            for (date, down, up) in days14.iter().rev() {
+                let day_total = down + up;
+                ui.horizontal(|ui| {
+                    ui.add_sized([86.0, 18.0], egui::Label::new(date.as_str()));
+                    let w = (ui.available_width() - 210.0).max(60.0);
+                    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, 10.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 3.0, CARD_INNER);
+                    let mut fill = rect;
+                    fill.max.x = fill.min.x + fill.width() * (day_total as f32 / max_day as f32);
+                    ui.painter().rect_filled(fill, 3.0, GREEN);
+                    ui.add_sized([96.0, 18.0], egui::Label::new(format_bytes(day_total)));
+                });
+                ui.add_space(4.0);
+            }
+        });
+    }
+
 }
 
 /// Queue a firewall apply for a block toggle on a worker thread
@@ -377,12 +811,12 @@ fn queue_firewall(
     let name = name.to_string();
     std::thread::spawn(move || {
         let note = match fluxlimiter::firewall::set_blocked(&exe, blocked) {
-            Ok(()) => (
-                format!(
-                    "{} {} in Windows Firewall.",
-                    name,
-                    if blocked { "blocked" } else { "unblocked" }
-                ),
+            Ok(path) => (
+                if blocked {
+                    format!("{name} blocked in Windows Firewall ({path}). Connections already open are not cut - test with a new site.")
+                } else {
+                    format!("{name} unblocked in Windows Firewall.")
+                },
                 false,
             ),
             Err(e) => (
@@ -530,19 +964,21 @@ impl eframe::App for FluxApp {
                 ui.add_space(22.0);
                 Self::card_label(ui, "Menu", MUTED);
                 ui.add_space(6.0);
-                for (i, name) in ["Dashboard", "Applications", "Rules", "Monthly Usage", "Statistics"]
-                    .iter()
-                    .enumerate()
-                {
-                    let selected = i == 0;
+                for (page, name) in [
+                    (Page::Dashboard, "Dashboard"),
+                    (Page::Applications, "Applications"),
+                    (Page::Rules, "Rules"),
+                    (Page::Monthly, "Monthly Usage"),
+                    (Page::Statistics, "Statistics"),
+                ] {
+                    let selected = self.page == page;
                     let text_color = if selected { TEXT } else { MUTED };
-                    let btn = egui::Button::new(RichText::new(*name).size(13.0).color(text_color))
+                    let btn = egui::Button::new(RichText::new(name).size(13.0).color(text_color))
                         .fill(if selected { Color32::from_rgb(11, 94, 215) } else { Color32::TRANSPARENT })
                         .rounding(9.0)
                         .min_size(Vec2::new(176.0, 38.0));
-                    let resp = ui.add(btn);
-                    if !selected {
-                        resp.on_hover_text("This page is not built yet - everything lives on the Dashboard for now.");
+                    if ui.add(btn).clicked() {
+                        self.page = page;
                     }
                     ui.add_space(4.0);
                 }
@@ -585,7 +1021,7 @@ impl eframe::App for FluxApp {
             .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
-                    ui.label(RichText::new("Dashboard").size(26.0).strong().color(TEXT));
+                    ui.label(RichText::new(self.page.title()).size(26.0).strong().color(TEXT));
                     ui.label(RichText::new("Overview of your network usage and active applications").color(MUTED));
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -634,243 +1070,13 @@ impl eframe::App for FluxApp {
             }
             ui.add_space(12.0);
 
-            // ---- stat cards ----
-            let (d_down, d_up) = self.stats.today();
-            let (m_down, m_up) = self.stats.current_month();
-            let month_total = m_down + m_up;
-            let quota = MONTHLY_QUOTA_GB * 1024 * 1024 * 1024;
-            let month_frac = month_total as f32 / quota as f32;
-            ui.columns(4, |cols| {
-                Self::card(&mut cols[0], |ui| {
-                    ui.set_min_height(118.0);
-                    Self::card_label(ui, "Download", GREEN);
-                    ui.label(RichText::new(format_speed(self.snap.down_bps, self.use_bits)).size(21.0).strong().color(TEXT));
-                    ui.add_space(4.0);
-                    Self::sparkline(ui, &self.history, 0, GREEN);
-                });
-                Self::card(&mut cols[1], |ui| {
-                    ui.set_min_height(118.0);
-                    Self::card_label(ui, "Upload", BLUE);
-                    ui.label(RichText::new(format_speed(self.snap.up_bps, self.use_bits)).size(21.0).strong().color(TEXT));
-                    ui.add_space(4.0);
-                    Self::sparkline(ui, &self.history, 1, BLUE);
-                });
-                Self::card(&mut cols[2], |ui| {
-                    ui.set_min_height(118.0);
-                    Self::card_label(ui, "Daily Usage", MUTED);
-                    ui.label(RichText::new(format_bytes(d_down + d_up)).size(21.0).strong().color(TEXT));
-                    ui.label(RichText::new(format!("Down {}   Up {}", format_bytes(d_down), format_bytes(d_up))).color(MUTED).size(11.0));
-                    ui.add_space(6.0);
-                    Self::progress_bar(ui, (d_down + d_up) as f32 / quota as f32, BLUE);
-                    ui.label(RichText::new("Share of the monthly quota").color(MUTED).size(10.0));
-                });
-                Self::card(&mut cols[3], |ui| {
-                    ui.set_min_height(118.0);
-                    Self::card_label(ui, "Monthly Usage", MUTED);
-                    ui.label(RichText::new(format!("{} / {} GB", format_bytes(month_total), MONTHLY_QUOTA_GB)).size(21.0).strong().color(TEXT));
-                    ui.add_space(2.0);
-                    let bar_color = if month_frac >= 0.9 { RED } else if month_frac >= 0.7 { AMBER } else { GREEN };
-                    Self::progress_bar(ui, month_frac, bar_color);
-                    ui.label(RichText::new(format!("{:.0}% of monthly quota", month_frac * 100.0)).color(MUTED).size(11.0));
-                });
-            });
-            ui.add_space(12.0);
-
-            // ---- middle row ----
-            ui.columns(2, |cols| {
-                Self::card(&mut cols[0], |ui| {
-                    ui.set_min_height(196.0);
-                    ui.label(RichText::new("Top Applications").size(14.0).strong().color(TEXT));
-                    ui.label(RichText::new("Ranked by active connections").color(MUTED).size(11.0));
-                    ui.add_space(8.0);
-                    let top: Vec<AppTraffic> = self.snap.apps.iter().take(5).cloned().collect();
-                    if top.is_empty() {
-                        ui.label(RichText::new("No active connections right now.").color(MUTED));
-                    }
-                    let peak = top.iter().map(|a| a.connections).max().unwrap_or(1).max(1);
-                    for app in top {
-                        let mut name_resp: Option<egui::Response> = None;
-                        ui.horizontal(|ui| {
-                            name_resp = Some(ui.add_sized(
-                                [150.0, 18.0],
-                                egui::Label::new(&app.name).sense(egui::Sense::click()),
-                            ));
-                            let w = 150.0 * app.connections as f32 / peak as f32;
-                            let (rect, _) = ui.allocate_exact_size(Vec2::new(160.0, 9.0), egui::Sense::hover());
-                            ui.painter().rect_filled(rect, 4.0, CARD_INNER);
-                            let mut fill = rect;
-                            fill.max.x = rect.min.x + w.max(6.0);
-                            ui.painter().rect_filled(fill, 4.0, GREEN);
-                            ui.label(RichText::new(format!("{} conn", app.connections)).color(MUTED).size(11.0));
-                        });
-                        if let Some(resp) = &name_resp {
-                            app_context_menu(resp, &app, &mut self.rules, &self.fw_result);
-                        }
-                        ui.add_space(3.0);
-                    }
-                });
-                Self::card(&mut cols[1], |ui| {
-                    ui.set_min_height(196.0);
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Usage - Last 7 Days").size(14.0).strong().color(TEXT));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(RichText::new("Upload").color(BLUE).strong().size(11.0));
-                            ui.label(RichText::new("Download").color(GREEN).strong().size(11.0));
-                        });
-                    });
-                    ui.add_space(6.0);
-                    let days = self.stats.last_days(7);
-                    let peak = days.iter().map(|(_, r, s)| r + s).max().unwrap_or(1).max(1) as f32;
-                    let (peak_date, peak_down, peak_up) = days
-                        .iter()
-                        .max_by_key(|(_, r, s)| r + s)
-                        .map(|(d, r, s)| (d.clone(), *r, *s))
-                        .unwrap_or_default();
-                    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 138.0), egui::Sense::hover());
-                    let slot = rect.width() / days.len() as f32;
-                    // baseline
-                    ui.painter().line_segment(
-                        [egui::pos2(rect.min.x, rect.max.y - 18.0), egui::pos2(rect.max.x, rect.max.y - 18.0)],
-                        Stroke::new(1.0_f32, ROW_LINE),
-                    );
-                    for (i, (date, r, s)) in days.iter().enumerate() {
-                        let total_h = (*r + *s) as f32 / peak * 106.0;
-                        let down_h = *r as f32 / peak * 106.0;
-                        let cx = rect.min.x + slot * i as f32 + slot / 2.0;
-                        let bw = (slot * 0.5).min(42.0);
-                        let base = rect.max.y - 18.0;
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_max(
-                                egui::pos2(cx - bw / 2.0, base - down_h),
-                                egui::pos2(cx + bw / 2.0, base),
-                            ),
-                            3.0, GREEN);
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_max(
-                                egui::pos2(cx - bw / 2.0, base - total_h),
-                                egui::pos2(cx + bw / 2.0, base - down_h),
-                            ),
-                            3.0, BLUE);
-                        ui.painter().text(
-                            egui::pos2(cx, base + 3.0),
-                            egui::Align2::CENTER_TOP,
-                            &date[5..],
-                            egui::FontId::proportional(10.0),
-                            MUTED);
-                    }
-                    ui.label(
-                        RichText::new(format!(
-                            "Peak day {}: {} down / {} up",
-                            &peak_date[5..],
-                            format_bytes(peak_down),
-                            format_bytes(peak_up)
-                        ))
-                        .color(MUTED)
-                        .size(11.0),
-                    );
-                });
-            });
-            ui.add_space(12.0);
-
-            // ---- active applications table ----
-            Self::card(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Active Applications").size(15.0).strong().color(TEXT));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Search applications...").desired_width(220.0));
-                    });
-                });
-                ui.add_space(8.0);
-                // column headers
-                ui.horizontal(|ui| {
-                    ui.add_sized([240.0, 16.0], egui::Label::new(RichText::new("APPLICATION").color(MUTED).size(10.0).strong()));
-                    ui.add_sized([90.0, 16.0], egui::Label::new(RichText::new("STATUS").color(MUTED).size(10.0).strong()));
-                    ui.add_sized([90.0, 16.0], egui::Label::new(RichText::new("CONNECTIONS").color(MUTED).size(10.0).strong()));
-                    ui.add_sized([218.0, 16.0], egui::Label::new(RichText::new("LIMIT DOWN / UP (KB/s)").color(MUTED).size(10.0).strong()));
-                    ui.add_sized([52.0, 16.0], egui::Label::new(RichText::new("RULE").color(MUTED).size(10.0).strong()));
-                    ui.add_sized([64.0, 16.0], egui::Label::new(RichText::new("ACTION").color(MUTED).size(10.0).strong()));
-                });
-                let header_bottom = ui.cursor().min.y;
-                let full = ui.available_rect_before_wrap();
-                ui.painter().line_segment(
-                    [egui::pos2(full.min.x, header_bottom + 2.0), egui::pos2(full.max.x, header_bottom + 2.0)],
-                    Stroke::new(1.0_f32, ROW_LINE),
-                );
-                ui.add_space(6.0);
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    let query = self.search.to_lowercase();
-                    let apps: Vec<_> = self.snap.apps.iter()
-                        .filter(|a| query.is_empty() || a.name.to_lowercase().contains(&query))
-                        .cloned()
-                        .collect();
-                    if apps.is_empty() {
-                        ui.label(RichText::new("No applications with active connections.").color(MUTED));
-                    }
-                    let row_count = apps.len();
-                    for (row_idx, app) in apps.into_iter().enumerate() {
-                        let mut rule: Rule = self.rules.get_or_default(&app.exe_path, &app.name);
-                        let prev_blocked = rule.blocked;
-                        let mut changed = false;
-                        let mut name_resp: Option<egui::Response> = None;
-                        ui.horizontal(|ui| {
-                            name_resp = Some(ui.add_sized(
-                                [240.0, 20.0],
-                                egui::Label::new(&app.name).sense(egui::Sense::click()),
-                            ));
-                            ui.add_sized([90.0, 20.0], egui::Label::new(RichText::new("Active").color(GREEN)));
-                            ui.add_sized([90.0, 20.0], egui::Label::new(format!("{} conn", app.connections)));
-                            // limit dropdowns (KB/s presets)
-                            for is_down in [true, false] {
-                                let current = if is_down { rule.limit_down_kbps } else { rule.limit_up_kbps };
-                                let mut label = limit_label(current);
-                                egui::ComboBox::from_id_salt(format!("lim-{}-{is_down}", app.exe_path))
-                                    .selected_text(label.clone())
-                                    .width(105.0)
-                                    .show_ui(ui, |ui| {
-                                        for preset in LIMIT_PRESETS_KBPS {
-                                            if ui.selectable_value(&mut label, preset.to_string(), preset).changed() {
-                                                let v = parse_limit_kbps(&label);
-                                                if is_down { rule.limit_down_kbps = v; } else { rule.limit_up_kbps = v; }
-                                                changed = true;
-                                            }
-                                        }
-                                    });
-                            }
-                            ui.add_sized([52.0, 20.0], egui::Label::new(if rule.blocked {
-                                RichText::new("Block").color(RED)
-                            } else if rule.has_limit() {
-                                RichText::new("Limit")
-                            } else {
-                                RichText::new("-").color(MUTED)
-                            }));
-                            if ui.add_sized([64.0, 22.0], egui::Button::new(if rule.blocked { "Unblock" } else { "Block" })).clicked() {
-                                rule.blocked = !rule.blocked;
-                                changed = true;
-                            }
-                        });
-                        if changed {
-                            let now_blocked = rule.blocked;
-                            self.rules.set(rule);
-                            if now_blocked != prev_blocked {
-                                queue_firewall(&self.fw_result, &app.exe_path, &app.name, now_blocked);
-                            }
-                        }
-                        if let Some(resp) = &name_resp {
-                            app_context_menu(resp, &app, &mut self.rules, &self.fw_result);
-                        }
-                        if row_idx + 1 < row_count {
-                            ui.add_space(3.0);
-                            let r = ui.available_rect_before_wrap();
-                            let y = ui.cursor().min.y;
-                            ui.painter().line_segment(
-                                [egui::pos2(r.min.x, y), egui::pos2(r.max.x, y)],
-                                Stroke::new(1.0_f32, ROW_LINE),
-                            );
-                            ui.add_space(3.0);
-                        }
-                    }
-                });
-            });
+            match self.page {
+                Page::Dashboard => self.dashboard_body(ui),
+                Page::Applications => self.applications_page(ui),
+                Page::Rules => self.rules_page(ui),
+                Page::Monthly => self.monthly_page(ui),
+                Page::Statistics => self.statistics_page(ui),
+            }
         });
     }
 }
