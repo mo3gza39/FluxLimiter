@@ -101,7 +101,7 @@ impl FluxApp {
             egui::ViewportId::from_hash_of("taskbar_strip"),
             egui::ViewportBuilder::default()
                 .with_title("FluxLimiter speed")
-                .with_inner_size([150.0, 46.0])
+                .with_inner_size([200.0, 46.0])
                 .with_decorations(false)
                 .with_always_on_top()
                 .with_taskbar(false),
@@ -109,8 +109,8 @@ impl FluxApp {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::none().fill(Color32::from_rgb(11, 21, 32)))
                     .show(vctx, |ui| {
-                        ui.label(RichText::new(format!("↓ {down}")).color(GREEN).size(13.0));
-                        ui.label(RichText::new(format!("↑ {up}")).color(BLUE).size(13.0));
+                        ui.label(RichText::new(format!("Down {down}")).color(GREEN).size(13.0));
+                        ui.label(RichText::new(format!("Up {up}")).color(BLUE).size(13.0));
                     });
                 if vctx.input(|i| i.viewport().close_requested()) {
                     // strip is controlled from the main window checkbox
@@ -131,7 +131,7 @@ impl eframe::App for FluxApp {
             .frame(egui::Frame::none().fill(Color32::from_rgb(12, 26, 41)))
             .show(ctx, |ui| {
                 ui.add_space(14.0);
-                ui.label(RichText::new("▮▮ FluxLimiter").size(17.0).strong());
+                ui.label(RichText::new("FluxLimiter").size(17.0).strong());
                 ui.add_space(16.0);
                 for (i, name) in ["Dashboard", "Applications", "Rules", "Monthly Usage", "Statistics"]
                     .iter()
@@ -168,17 +168,17 @@ impl eframe::App for FluxApp {
             let quota = MONTHLY_QUOTA_GB * 1024 * 1024 * 1024;
             ui.columns(4, |cols| {
                 Self::card(&mut cols[0], |ui| {
-                    ui.label(RichText::new("↓ Download").color(MUTED));
+                    ui.label(RichText::new("Download").color(GREEN));
                     ui.label(RichText::new(format_speed(self.snap.down_bps, self.use_bits)).size(19.0).strong());
                 });
                 Self::card(&mut cols[1], |ui| {
-                    ui.label(RichText::new("↑ Upload").color(MUTED));
+                    ui.label(RichText::new("Upload").color(BLUE));
                     ui.label(RichText::new(format_speed(self.snap.up_bps, self.use_bits)).size(19.0).strong());
                 });
                 Self::card(&mut cols[2], |ui| {
                     ui.label(RichText::new("Daily Usage").color(MUTED));
                     ui.label(RichText::new(format_bytes(d_down + d_up)).size(19.0).strong());
-                    ui.label(RichText::new(format!("↓ {}   ↑ {}", format_bytes(d_down), format_bytes(d_up))).color(MUTED).size(11.0));
+                    ui.label(RichText::new(format!("Down {}   Up {}", format_bytes(d_down), format_bytes(d_up))).color(MUTED).size(11.0));
                 });
                 Self::card(&mut cols[3], |ui| {
                     ui.label(RichText::new("Monthly Usage").color(MUTED));
@@ -212,7 +212,11 @@ impl eframe::App for FluxApp {
                     }
                 });
                 Self::card(&mut cols[1], |ui| {
-                    ui.label(RichText::new("Daily Usage (Last 7 Days)   ■ Download  ■ Upload").strong());
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Daily Usage (Last 7 Days)").strong());
+                        ui.label(RichText::new("Download").color(GREEN).strong());
+                        ui.label(RichText::new("Upload").color(BLUE).strong());
+                    });
                     ui.add_space(6.0);
                     let days = self.stats.last_days(7);
                     let peak = days.iter().map(|(_, r, s)| r + s).max().unwrap_or(1).max(1) as f32;
@@ -252,7 +256,7 @@ impl eframe::App for FluxApp {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Active Applications").size(15.0).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Search applications…").desired_width(220.0));
+                        ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Search applications...").desired_width(220.0));
                     });
                 });
                 ui.add_space(6.0);
@@ -270,7 +274,7 @@ impl eframe::App for FluxApp {
                         let mut changed = false;
                         ui.horizontal(|ui| {
                             ui.add_sized([240.0, 20.0], egui::Label::new(&app.name));
-                            ui.add_sized([90.0, 20.0], egui::Label::new(RichText::new("● Active").color(GREEN)));
+                            ui.add_sized([90.0, 20.0], egui::Label::new(RichText::new("Active").color(GREEN)));
                             ui.add_sized([90.0, 20.0], egui::Label::new(format!("{} conn", app.connections)));
                             // limit dropdowns (KB/s presets)
                             for is_down in [true, false] {
@@ -294,7 +298,7 @@ impl eframe::App for FluxApp {
                             } else if rule.has_limit() {
                                 RichText::new("Limit")
                             } else {
-                                RichText::new("—").color(MUTED)
+                                RichText::new("-").color(MUTED)
                             });
                             if ui.small_button(if rule.blocked { "Unblock" } else { "Block" }).clicked() {
                                 rule.blocked = !rule.blocked;
