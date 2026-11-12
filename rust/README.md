@@ -50,10 +50,20 @@ was marked unverified in the repo's own status docs.
   daily/monthly usage, 7-day chart, active-applications table with
   limit dropdowns and block toggle (rules saved; **not enforced yet**,
   and the UI says so).
-* ✅ Taskbar speed strip: a plain always-on-top egui viewport next to
-  the tray — two lines (↓/↑), no themes, per the user's request.
-  Hovering it shows today's and this month's usage; right-clicking
-  it opens a menu (Open FluxLimiter, bits toggle, Hide, Exit).
+* ✅ Taskbar speed display: on Windows it docks INTO the taskbar
+  itself, TrafficMonitor-style — a native child window of
+  `Shell_TrayWnd` sitting left of the notification area
+  (`src/taskbar_dock.rs`), following the tray and re-docking if
+  Explorer restarts. Hovering shows today's and this month's
+  usage; right-clicking opens a menu (Open FluxLimiter, bits
+  toggle, Hide, Exit). Where docking is unavailable (vertical
+  taskbar, non-Windows) a plain always-on-top egui strip is the
+  fallback — two lines, no themes, per the user's request.
+* ✅ Blocking is real in standalone mode: toggling Block applies
+  Windows Firewall rules for the executable (both directions)
+  from the GUI via elevated `netsh` (`src/firewall.rs`), with the
+  outcome reported under the banner. (The service will own this
+  once the GUI is wired to it.)
 * ✅ Application icon: a speedometer mark in the project's own
   palette (navy #102B48, cyan #1FD1EF, orange #F59D10 — chosen by
   the user from reference concepts), set on the window, embedded
