@@ -23,6 +23,9 @@ use fluxlimiter::stats::StatsStore;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+mod taskbar_dock;
+
 /// Decode base85 text (the project's sync channel carries text
 /// only, so binary assets travel as base85).
 fn b85_decode(text: &str) -> Vec<u8> {
@@ -134,6 +137,13 @@ struct FluxApp {
     /// Whether the strip has been given its initial position
     /// (bottom-right, next to the tray) yet.
     strip_placed: bool,
+    /// TrafficMonitor-style taskbar dock (Windows only).
+    #[cfg(windows)]
+    dock: Option<Arc<taskbar_dock::DockShared>>,
+    /// Latest firewall-apply result from a worker thread:
+    /// (message, is_error). Shown under the banner.
+    fw_result: Arc<Mutex<Option<(String, bool)>>>,
+    fw_note: Option<(String, bool)>,
     /// The real app icon as a GPU texture for the sidebar logo,
     /// loaded once from the same RGBA bytes as the window icon.
     logo: Option<egui::TextureHandle>,
@@ -143,6 +153,13 @@ impl Default for FluxApp {
     fn default() -> Self {
         let mut monitor = NetworkMonitor::new();
         let snap = monitor.poll();
+        let strip_action = Arc::new(Mutex::new(None));
+        #[cfg(windows)]
+        let dock = {
+            let shared = Arc::new(taskbar_dock::DockShared::new(strip_action.clone()));
+            taskbar_dock::spawn(shared.clone());
+            Some(shared)
+        };
         Self {
             monitor,
             stats: StatsStore::load_default(),
@@ -153,8 +170,12 @@ impl Default for FluxApp {
             show_strip: true,
             search: String::new(),
             history: Vec::new(),
-            strip_action: Arc::new(Mutex::new(None)),
+            strip_action,
             strip_placed: false,
+            #[cfg(windows)]
+            dock,
+            fw_result: Arc::new(Mutex::new(None)),
+            fw_note: None,
             logo: None,
         }
     }
@@ -226,9 +247,44 @@ impl FluxApp {
         ui.painter().add(egui::Shape::line(points, Stroke::new(1.5_f32, color)));
     }
 
+    /// Mirror the live numbers and toggles into the taskbar dock
+    /// (Windows). Runs every frame; the dock thread paints on its
+    /// own 500 ms timer.
+    #[cfg(windows)]
+    fn sync_dock(&self) {
+        use std::sync::atomic::Ordering;
+        let Some(dock) = &self.dock else { return };
+        let (t_down, t_up) = self.stats.today();
+        let (m_down, m_up) = self.stats.current_month();
+        if let Ok(mut s) = dock.down.lock() {
+            *s = format_speed(self.snap.down_bps, self.use_bits);
+        }
+        if let Ok(mut s) = dock.up.lock() {
+            *s = format_speed(self.snap.up_bps, self.use_bits);
+        }
+        if let Ok(mut s) = dock.hover.lock() {
+            *s = format!(
+                "Today: Down {} / Up {}\nThis month: {}",
+                format_bytes(t_down),
+                format_bytes(t_up),
+                format_bytes(m_down + m_up)
+            );
+        }
+        dock.visible.store(self.show_strip, Ordering::Relaxed);
+        dock.use_bits.store(self.use_bits, Ordering::Relaxed);
+    }
+
     fn taskbar_strip(&mut self, ctx: &egui::Context) {
         if !self.show_strip {
             return;
+        }
+        // While the real taskbar dock is alive it replaces the
+        // floating strip entirely.
+        #[cfg(windows)]
+        if let Some(dock) = &self.dock {
+            if dock.active.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
         }
         let down = format_speed(self.snap.down_bps, self.use_bits);
         let up = format_speed(self.snap.up_bps, self.use_bits);
@@ -307,10 +363,48 @@ impl FluxApp {
     }
 }
 
+/// Queue a firewall apply for a block toggle on a worker thread
+/// (the UAC prompt must not freeze the UI thread). The outcome
+/// lands in `slot` as (message, is_error) for the banner area.
+fn queue_firewall(
+    slot: &Arc<Mutex<Option<(String, bool)>>>,
+    exe_path: &str,
+    name: &str,
+    blocked: bool,
+) {
+    let slot = slot.clone();
+    let exe = exe_path.to_string();
+    let name = name.to_string();
+    std::thread::spawn(move || {
+        let note = match fluxlimiter::firewall::set_blocked(&exe, blocked) {
+            Ok(()) => (
+                format!(
+                    "{} {} in Windows Firewall.",
+                    name,
+                    if blocked { "blocked" } else { "unblocked" }
+                ),
+                false,
+            ),
+            Err(e) => (
+                format!("Firewall rule NOT applied for {name}: {e}. The rule itself is saved."),
+                true,
+            ),
+        };
+        if let Ok(mut s) = slot.lock() {
+            *s = Some(note);
+        }
+    });
+}
+
 /// Right-click menu for an application row (table and Top
 /// Applications alike), NetLimiter-style: jump to the file in
 /// Explorer, open its Properties sheet, copy its path, block it.
-fn app_context_menu(resp: &egui::Response, app: &AppTraffic, rules: &mut RulesStore) {
+fn app_context_menu(
+    resp: &egui::Response,
+    app: &AppTraffic,
+    rules: &mut RulesStore,
+    fw_result: &Arc<Mutex<Option<(String, bool)>>>,
+) {
     let mut rule = rules.get_or_default(&app.exe_path, &app.name);
     let blocked = rule.blocked;
     let exe = app.exe_path.clone();
@@ -344,6 +438,7 @@ fn app_context_menu(resp: &egui::Response, app: &AppTraffic, rules: &mut RulesSt
         if ui.button(if blocked { "Unblock" } else { "Block" }).clicked() {
             rule.blocked = !blocked;
             rules.set(rule.clone());
+            queue_firewall(fw_result, &app.exe_path, &app.name, !blocked);
             ui.close_menu();
         }
     });
@@ -353,6 +448,12 @@ impl eframe::App for FluxApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_if_due();
         ctx.request_repaint_after(Duration::from_millis(250));
+        #[cfg(windows)]
+        self.sync_dock();
+        // Pick up any finished firewall apply for the note line.
+        if let Some(note) = self.fw_result.lock().ok().and_then(|mut s| s.take()) {
+            self.fw_note = Some(note);
+        }
         // Drain any request from the strip's right-click menu.
         if let Some(action) = self.strip_action.lock().ok().and_then(|mut s| s.take()) {
             match action {
@@ -518,11 +619,19 @@ impl eframe::App for FluxApp {
                 .inner_margin(egui::Margin::symmetric(12.0, 8.0))
                 .show(ui, |ui| {
                     ui.label(
-                        RichText::new("Limits are saved, not enforced yet - the driver engine is the next milestone. Blocking uses Windows Firewall via the service once it is wired in.")
+                        RichText::new("Limits are saved, not enforced yet - the driver engine is the next milestone. Blocking applies a Windows Firewall rule; you will be asked for admin approval.")
                             .color(AMBER)
                             .size(12.0),
                     );
                 });
+            if let Some((note, is_error)) = &self.fw_note {
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(note)
+                        .color(if *is_error { RED } else { GREEN })
+                        .size(12.0),
+                );
+            }
             ui.add_space(12.0);
 
             // ---- stat cards ----
@@ -595,7 +704,7 @@ impl eframe::App for FluxApp {
                             ui.label(RichText::new(format!("{} conn", app.connections)).color(MUTED).size(11.0));
                         });
                         if let Some(resp) = &name_resp {
-                            app_context_menu(resp, &app, &mut self.rules);
+                            app_context_menu(resp, &app, &mut self.rules, &self.fw_result);
                         }
                         ui.add_space(3.0);
                     }
@@ -700,6 +809,7 @@ impl eframe::App for FluxApp {
                     let row_count = apps.len();
                     for (row_idx, app) in apps.into_iter().enumerate() {
                         let mut rule: Rule = self.rules.get_or_default(&app.exe_path, &app.name);
+                        let prev_blocked = rule.blocked;
                         let mut changed = false;
                         let mut name_resp: Option<egui::Response> = None;
                         ui.horizontal(|ui| {
@@ -739,10 +849,14 @@ impl eframe::App for FluxApp {
                             }
                         });
                         if changed {
+                            let now_blocked = rule.blocked;
                             self.rules.set(rule);
+                            if now_blocked != prev_blocked {
+                                queue_firewall(&self.fw_result, &app.exe_path, &app.name, now_blocked);
+                            }
                         }
                         if let Some(resp) = &name_resp {
-                            app_context_menu(resp, &app, &mut self.rules);
+                            app_context_menu(resp, &app, &mut self.rules, &self.fw_result);
                         }
                         if row_idx + 1 < row_count {
                             ui.add_space(3.0);
