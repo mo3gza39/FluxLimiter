@@ -51,14 +51,20 @@ was marked unverified in the repo's own status docs.
   limit dropdowns and block toggle (rules saved; **not enforced yet**,
   and the UI says so).
 * ✅ Taskbar speed display: on Windows it docks INTO the taskbar
-  itself, TrafficMonitor-style — a native child window of
-  `Shell_TrayWnd` sitting left of the notification area
-  (`src/taskbar_dock.rs`), following the tray and re-docking if
-  Explorer restarts. Hovering shows today's and this month's
-  usage; right-clicking opens a menu (Open FluxLimiter, bits
-  toggle, Hide, Exit). Where docking is unavailable (vertical
-  taskbar, non-Windows) a plain always-on-top egui strip is the
-  fallback — two lines, no themes, per the user's request.
+  itself (`src/taskbar_dock.rs`), mirroring the open-source
+  TrafficMonitor's own two implementations, which were read and
+  followed: on the classical taskbar the parent is
+  `ReBarWindow32` and room is made by shrinking `MSTaskSwWClass`
+  (restored on hide/exit); on Windows 11 the parent is
+  `Shell_TrayWnd`, placed left of `TrayNotifyWnd` and centered
+  on the Start button's height. The dock only suppresses the
+  floating strip once its rect verifiably intersects the visible
+  taskbar, and every step is logged to `dock.log` in the app
+  data folder. Hovering shows today's and this month's usage;
+  right-clicking opens a menu (Open FluxLimiter, bits toggle,
+  Hide, Exit). Where docking is unavailable (vertical taskbar,
+  non-Windows) a plain always-on-top egui strip is the fallback
+  — two lines, no themes, per the user's request.
 * ✅ Blocking is real in standalone mode: toggling Block applies
   Windows Firewall rules for the executable (both directions)
   from the GUI via elevated `netsh` (`src/firewall.rs`). The
